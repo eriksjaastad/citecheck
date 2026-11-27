@@ -141,13 +141,17 @@ def quote_in(quote: str, text: str) -> bool:
 
 
 class _Visible(HTMLParser):
-    """Visible text: no comments, attributes, scripts or styles; inline tags join words."""
+    """Visible text: no comments, attributes, scripts or styles; inline tags join words.
+
+    <sup> and <sub> are boundaries, not joins: a reference marker ("mortality<sup>1</sup>")
+    must not glue onto the word it follows. The cost is that "m<sup>2</sup>" reads as "m 2".
+    """
 
     SKIP = frozenset({"script", "style", "noscript", "template"})
     BLOCK = frozenset({"address", "article", "aside", "blockquote", "br", "dd", "div", "dl",
                        "dt", "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5",
                        "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section",
-                       "table", "td", "th", "tr", "ul"})
+                       "table", "td", "th", "tr", "ul", "sup", "sub"})
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)

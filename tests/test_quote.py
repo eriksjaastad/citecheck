@@ -1,4 +1,5 @@
 import codecs
+import io
 
 import pytest
 from conftest import make_pdf
@@ -144,6 +145,29 @@ def test_html_hides_comments_attributes_and_scripts(tmp_path):
         assert check_quote(Citation("p.html", hidden), root=tmp_path).status is Status.NOT_FOUND
     for shown in ("shown text", "unemployment rose"):
         assert check_quote(Citation("p.html", shown), root=tmp_path).status is Status.SUPPORTED
+
+
+@pytest.mark.parametrize("html", [
+    '<p>The treatment reduced mortality<sup><a href="#r1" role="doc-noteref">1</a></sup>.</p>',
+    "<p>The treatment reduced mortality<sup>1,2</sup> in adults.</p>",
+    "<p>The treatment reduced mortality[1] in adults.</p>",
+    "<p>The treatment reduced mortality<sub>a</sub> in adults.</p>",
+    "<p>The <i>treat</i>ment reduced <b>mor</b>tality.</p>",
+])
+def test_reference_markers_and_inline_tags(tmp_path, html):
+    (tmp_path / "p.html").write_text(html)
+    assert check_quote(Citation("p.html", "The treatment reduced mortality"), root=tmp_path) \
+        .status is Status.SUPPORTED
+
+
+def test_aes_pdf_with_empty_password(tmp_path):
+    from pypdf import PdfReader, PdfWriter
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(make_pdf(["Revenue rose sharply"]))))
+    writer.encrypt("", algorithm="AES-128")
+    with open(tmp_path / "aes.pdf", "wb") as out:
+        writer.write(out)
+    assert check_quote(Citation("aes.pdf", "revenue rose sharply", page=1), root=tmp_path) \
+        .status is Status.SUPPORTED
 
 
 def test_local_pdf_by_page(tmp_path):
