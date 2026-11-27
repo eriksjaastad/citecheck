@@ -7,7 +7,7 @@ and nothing leaves the machine unless you ask for it on that call.
   quote, where in the source it sits, and how sure you are.
 - **Status set:** seven statuses every project maps its own labels onto. A check that
   did not run is `NOT_CHECKED`; nothing is averaged into a score.
-- **Quote check:** is the quoted passage in the source? Local text files, PDFs by page,
+- **Quote check:** is the quoted passage in the source? Local text files, CSV by cell, PDFs by page,
   any script, and quotes cut with an ellipsis.
 - **Link check:** does the link load? `BLOCKED` (401, 403, 429, 451) is kept separate
   from `NOT_FOUND` (404, 410).
@@ -17,7 +17,7 @@ and nothing leaves the machine unless you ask for it on that call.
 Pin a tag:
 
 ```
-uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.1.2"
+uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.1.3"
 ```
 
 ## Use

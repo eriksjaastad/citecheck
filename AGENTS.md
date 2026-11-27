@@ -4,7 +4,7 @@ This is a public repo. Never add personal data, contact addresses or the names o
 private projects: not in code, tests, fixtures, commits or docs.
 
 citecheck is a shared library. Projects install it pinned to a version tag
-(`citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.1.2`), so every
+(`citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.1.3`), so every
 change a caller can notice ships as a new tag, and a tag is never moved.
 
 ## Rules the code keeps
