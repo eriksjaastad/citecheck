@@ -1,0 +1,18 @@
+[project]
+name = "citecheck"
+version = "0.1.0"
+description = "Mechanical checks that a claim matches its cited source: the quote is there, the link is live."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["pypdf>=4"]
+
+[dependency-groups]
+dev = ["pytest>=8", "hypothesis>=6", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
