@@ -102,8 +102,12 @@ def test_no_piece_of_a_formatted_number_is_found(number, data):
     ("cost $1,234,567.89", "cost $1,234,567.89"),
     ("rate .5%", "rate .5%"),
     ("pages 10-20", "pages 10—20"),
+    ("Employment reached 450", "Employment reached 450—double last year."),
+    ("double last year", "Employment reached 450—double last year."),
+    ("in 2024 sales fell", "in 2024–sales fell"),
+    ("rose 4.5 then", "rose 4.5—then"),
     ("between 10 20", "between 10 – 20"),        # spaced dash between integers: a range
-    ("a 20-year study", "a 20–year study"),
+    ("a 20 year study", "a 20–year study"),       # an en dash before a word is punctuation
     ("Rate: 3,5%", "Rate: 3,5%"),
     ("cost ₹1,00,000", "cost ₹1,00,000"),
     ("Total", "Total($100.00)"),
@@ -151,7 +155,9 @@ def test_matches_that_must_pass(quote, text):
     ("between $10 $20", "between $10-$20"),     # unspaced: kept, a quote must keep it
     ("a 20 year study", "a 20-year study"),
     ("pages 10 20", "pages 10—20"),
-    ("24.99", "24.99-\n100.00"),                # a trailing negative before the next cell
+    ("24.99", "24.99-\n100.00"),
+    ("450", "it was 450–500 people"),             # an en dash between amounts is a range
+    ("$10", "between $10—$20"),                # a trailing negative before the next cell
     ("$24.99", "$100.00 -$24.99"),              # a negative cell after another value
     ("$24.99", "$100.00 - $24.99"),
     ("$24.99", "$100.00\u00a0-\u00a0$24.99"),

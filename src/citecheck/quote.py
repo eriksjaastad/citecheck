@@ -62,7 +62,9 @@ def normalize(text: str) -> str:
 
     Where a mark might belong to a number, it stays on it, so a quote that drops it
     is NOT_FOUND rather than falsely found:
-    - a dash touching a digit before it stays ("10-20", "24.99-", "2025-01-15");
+    - a hyphen or minus touching a digit before it stays ("24.99-", "2025-01-15",
+      "20-year"); an en or em dash there stays only before another amount ("10–20"),
+      since before a word it is prose punctuation ("450—double" is "450 double");
     - a sign touching a number or amount after it stays ("-5", "-$24.99", "COVID-19",
       and "100.00 -24.99", two values, not a range), every dash or minus written "-";
       "-", "+", "±" and "−" stay with spaces before the number too ("- 10%" is "-10%"),
@@ -103,7 +105,7 @@ def normalize(text: str) -> str:
             gap = True
             emit(ch)
             close_at = close
-        elif dash and touching_number:
+        elif dash and touching_number and (ch in _SPACED_SIGNS or _amount_at(text, i + 1)):
             out.append(ch if ch in "+±" else "-")
         elif dash and (j := _signed(text, i)) is not None:
             emit(ch if ch in "+±" else "-")
