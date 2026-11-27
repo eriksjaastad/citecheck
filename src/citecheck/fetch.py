@@ -11,7 +11,7 @@ import http.client
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -91,9 +91,15 @@ class Fetcher:
 
     It has no public fetch method: requests go out only through a check called with
     ``network=True``.
+
+    ``cache=True`` fetches each URL once for this Fetcher's life, so many quotes checked
+    against one page cost one request. It stores the answer as it came: an HTTP error
+    code stays that code, and a failed fetch raises the same FetchError again. Off by
+    default, so nothing is reused unless the caller asks; make a new Fetcher per run.
     """
 
-    def __init__(self, user_agent: str, *, timeout: float = 20, min_interval: float = 1.0):
+    def __init__(self, user_agent: str, *, timeout: float = 20, min_interval: float = 1.0,
+                 cache: bool = False):
         if not user_agent or not user_agent.strip():
             raise ConfigError("a user agent is required for network checks")
         self.user_agent = user_agent
@@ -101,6 +107,8 @@ class Fetcher:
         self.min_interval = min_interval
         self._last: dict[str, float] = {}
         self._opener = urllib.request.build_opener(_HttpOnlyRedirects, _Spacing(self._wait))
+        self._cache: dict[str, tuple[Response, FetchError | None] | FetchError] | None = \
+            {} if cache else None
 
     def _wait(self, host: str) -> None:
         last = self._last.get(host)
@@ -112,23 +120,55 @@ class Fetcher:
 
     def _get(self, url: str, *, read_body: bool = True) -> Response:
         """The HTTP answer, error codes included. Raises FetchError without a whole one."""
+        if self._cache is None:
+            resp, body_error = self._request(url, read_body)
+        else:
+            # One request per URL serves every later check, so the first always reads the
+            # body. Its HTTP answer and any body failure are kept apart: a body that broke
+            # off fails quote checks but leaves a link check's 200 a 200.
+            key = to_uri(url)
+            if key not in self._cache:
+                try:
+                    self._cache[key] = self._request(url, read_body=True)
+                except FetchError as exc:
+                    self._cache[key] = exc
+            hit = self._cache[key]
+            if isinstance(hit, FetchError):
+                raise hit
+            resp, body_error = hit
+        if read_body and body_error is not None:
+            raise body_error
+        return resp
+
+    def _request(self, url: str, read_body: bool) -> tuple[Response, FetchError | None]:
+        """The HTTP answer and, separately, why its body could not be read whole.
+
+        Raises FetchError when there is no HTTP answer at all.
+        """
         req = urllib.request.Request(to_uri(url), headers={"User-Agent": self.user_agent})
         try:
-            with self._opener.open(req, timeout=self.timeout) as resp:
-                body = resp.read(MAX_BYTES + 1) if read_body else b""
-                if len(body) > MAX_BYTES:
-                    raise FetchError(f"{url}: body is over the {MAX_BYTES}-byte limit")
-                declared = resp.headers.get("Content-Length", "")
-                if read_body and declared.isdigit() and len(body) < int(declared):
-                    raise FetchError(f"{url}: body ended at {len(body)} of {declared} bytes")
-                return Response(resp.geturl(), resp.status, resp.headers.get_content_type(),
-                                resp.headers.get_content_charset(), body)
+            resp = self._opener.open(req, timeout=self.timeout)
         except urllib.error.HTTPError as exc:
             with exc:
                 return Response(exc.geturl() or url, exc.code, exc.headers.get_content_type(),
-                                exc.headers.get_content_charset(), b"")
+                                exc.headers.get_content_charset(), b""), None
         except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
             raise FetchError(f"{url}: {type(exc).__name__}: {exc}") from exc
+        with resp:
+            head = Response(resp.geturl(), resp.status, resp.headers.get_content_type(),
+                            resp.headers.get_content_charset(), b"")
+            if not read_body:
+                return head, None
+            try:
+                body = resp.read(MAX_BYTES + 1)
+            except (http.client.HTTPException, OSError) as exc:
+                return head, FetchError(f"{url}: body read failed: {type(exc).__name__}: {exc}")
+            if len(body) > MAX_BYTES:
+                return head, FetchError(f"{url}: body is over the {MAX_BYTES}-byte limit")
+            declared = resp.headers.get("Content-Length", "")
+            if declared.isdigit() and len(body) < int(declared):
+                return head, FetchError(f"{url}: body ended at {len(body)} of {declared} bytes")
+            return replace(head, body=body), None
 
 
 class LinkStatus(str, Enum):

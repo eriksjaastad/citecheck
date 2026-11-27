@@ -7,7 +7,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-11-20T05:45:22.67574Z"
+exclude-newer = "2026-11-20T05:54:15.503244Z"
 exclude-newer-span = "P7D"
 
 [[package]]
@@ -123,7 +123,7 @@ wheels = [
 
 [[package]]
 name = "citecheck"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "pypdf", extra = ["crypto"] },

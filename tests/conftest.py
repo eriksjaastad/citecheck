@@ -4,6 +4,7 @@ from __future__ import annotations
 import http.server
 import threading
 import urllib.request
+from collections import Counter
 
 import pytest
 
@@ -51,8 +52,12 @@ ROUTES: dict[str, tuple[int, str, bytes]] = {
 REDIRECTS = {"/to-ftp": "ftp://127.0.0.1/x", "/hop": "/page"}
 
 
+HITS: Counter[str] = Counter()  # requests per path, for the cache tests
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        HITS[self.path] += 1
         if self.path in REDIRECTS:
             self.send_response(302)
             self.send_header("Location", REDIRECTS[self.path])

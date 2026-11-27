@@ -17,7 +17,7 @@ and nothing leaves the machine unless you ask for it on that call.
 Pin a tag:
 
 ```
-uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.1.0"
+uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.1.2"
 ```
 
 ## Use
@@ -41,7 +41,8 @@ map_label("✅", LABELS)                      # unknown labels raise, never defa
 
 Network checks need a `Fetcher`, and a `Fetcher` needs a user agent; either missing
 raises `ConfigError`. One `Fetcher` per run spaces requests to the same host, redirect
-hops included. Checking a citation with no quote raises `ValueError`. A source
+hops included; `Fetcher(USER_AGENT, cache=True)` also fetches each URL only once, keeping
+error answers and failures as they came. Checking a citation with no quote raises `ValueError`. A source
 that loads but yields no text raises `EmptySourceError` rather than calling the quote
 missing. A quote against a source that refused us is `BLOCKED`, against one that is
 gone or unreachable `NOT_CHECKED`, never `NOT_FOUND`.
