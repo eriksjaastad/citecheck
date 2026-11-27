@@ -23,7 +23,7 @@ and nothing leaves the machine unless you ask for it on that call.
 Pin a tag:
 
 ```
-uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.3.0"
+uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.4.0"
 ```
 
 ## Use
@@ -77,6 +77,18 @@ earlier grade make the row `new`. The key is checked before the checker runs; th
 checker gets 600 seconds (`--timeout`) and is stopped with everything it started. An
 empty key, an empty checker output, an id the key does not have, or a malformed
 baseline raises.
+
+## Rules for agents
+
+The fact-check protocol (seven failure modes, a source in every row, the grades) and the
+source tiers (S1 primary, S2 professional, S3 secondary, forums for experience only) ship as
+files an agent reads before checking. A project with no Python can load them pinned:
+
+```
+uvx --from git+https://github.com/eriksjaastad/citecheck@v0.4.0 citecheck-rules protocol tiers
+```
+
+In Python: `citecheck.rules.read("tiers")`. An unknown name raises.
 
 ## Develop
 

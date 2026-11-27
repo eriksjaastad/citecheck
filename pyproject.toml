@@ -1,11 +1,14 @@
 [project]
 name = "citecheck"
-version = "0.3.0"
-description = "Mechanical checks that a claim matches its cited source: quote, link, DOI and drift, and a regression runner."
+version = "0.4.0"
+description = "Mechanical checks that a claim matches its cited source: quote, link, DOI and drift, a regression runner, and the fact-check rules agents load."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = ["pypdf[crypto]>=4"]  # crypto: AES-encrypted PDFs, even with an empty password
+
+[project.scripts]
+citecheck-rules = "citecheck.rules.__main__:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "hypothesis>=6", "ruff>=0.6"]
