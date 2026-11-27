@@ -1,4 +1,5 @@
 import codecs
+import io
 
 import pytest
 from conftest import make_pdf
@@ -144,6 +145,44 @@ def test_html_hides_comments_attributes_and_scripts(tmp_path):
         assert check_quote(Citation("p.html", hidden), root=tmp_path).status is Status.NOT_FOUND
     for shown in ("shown text", "unemployment rose"):
         assert check_quote(Citation("p.html", shown), root=tmp_path).status is Status.SUPPORTED
+
+
+@pytest.mark.parametrize("html", [
+    '<p>The treatment reduced mortality<sup><a href="#r1" role="doc-noteref">1</a></sup>.</p>',
+    '<p>The treatment reduced mortality<sup><a href="#b1">1</a>,<a href="#b2">2</a></sup>.</p>',
+    '<p>The treatment reduced mortality<sup class="reference">[<a href="#c">3</a>]</sup>.</p>',
+    '<p>The treatment reduced mortality<sup role="doc-noteref">4</sup> in adults.</p>',
+    "<p>The treatment reduced mortality[1] in adults.</p>",
+    "<p>The <i>treat</i>ment reduced <b>mor</b>tality.</p>",
+])
+def test_reference_markers_and_inline_tags(tmp_path, html):
+    (tmp_path / "p.html").write_text(html)
+    assert check_quote(Citation("p.html", "The treatment reduced mortality"), root=tmp_path) \
+        .status is Status.SUPPORTED
+
+
+@pytest.mark.parametrize("html, whole, cut", [
+    ("<p>The gas is CO<sub>2</sub> here.</p>", "The gas is CO₂", "The gas is CO"),
+    ("<p>The gas is CO<sub>2</sub> here.</p>", "The gas is CO2", "The gas is CO"),
+    ("<p>An area of 25 m<sup>2</sup> was used.</p>", "An area of 25 m²", "An area of 25 m"),
+    ("<p>The count was 10<sup>6</sup> cells.</p>", "The count was 10⁶ cells", "The count was 10"),
+    ("<p>She came 1<sup>st</sup> overall.</p>", "She came 1st overall", "She came 1"),
+    ("<p>Drink H<sub>2</sub>O daily.</p>", "Drink H₂O daily", "Drink H"),
+])
+def test_sub_and_sup_notation_stays_joined(tmp_path, html, whole, cut):
+    (tmp_path / "n.html").write_text(html)
+    assert check_quote(Citation("n.html", whole), root=tmp_path).status is Status.SUPPORTED
+    assert check_quote(Citation("n.html", cut), root=tmp_path).status is Status.NOT_FOUND
+
+
+def test_aes_pdf_with_empty_password(tmp_path):
+    from pypdf import PdfReader, PdfWriter
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(make_pdf(["Revenue rose sharply"]))))
+    writer.encrypt("", algorithm="AES-128")
+    with open(tmp_path / "aes.pdf", "wb") as out:
+        writer.write(out)
+    assert check_quote(Citation("aes.pdf", "revenue rose sharply", page=1), root=tmp_path) \
+        .status is Status.SUPPORTED
 
 
 def test_local_pdf_by_page(tmp_path):
