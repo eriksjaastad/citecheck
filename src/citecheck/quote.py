@@ -143,36 +143,66 @@ def quote_in(quote: str, text: str) -> bool:
 class _Visible(HTMLParser):
     """Visible text: no comments, attributes, scripts or styles; inline tags join words.
 
-    <sup> and <sub> are boundaries, not joins: a reference marker ("mortality<sup>1</sup>")
-    must not glue onto the word it follows. The cost is that "m<sup>2</sup>" reads as "m 2".
+    <sup> and <sub> join too, so CO<sub>2</sub> is CO2 and m<sup>2</sup> is m2, the same
+    as NFKC makes of CO₂ and m². A reference marker is dropped and leaves a word
+    boundary instead: a <sup>/<sub> that holds an in-page link (<a href="#...">) or is
+    marked as a note (role doc-noteref; class reference, footnote, noteref or cite).
+    An unmarked <sup>1</sup> after a word can't be told from m<sup>2</sup>, so it
+    joins; a quote that omits it is NOT_FOUND, never falsely SUPPORTED.
     """
 
     SKIP = frozenset({"script", "style", "noscript", "template"})
     BLOCK = frozenset({"address", "article", "aside", "blockquote", "br", "dd", "div", "dl",
                        "dt", "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5",
                        "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section",
-                       "table", "td", "th", "tr", "ul", "sup", "sub"})
+                       "table", "td", "th", "tr", "ul"})
+    SCRIPT_POS = frozenset({"sup", "sub"})
+    NOTE_CLASSES = ("reference", "footnote", "noteref", "cite")
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self.skipping = 0
+        self.marks: list[tuple[list[bool], list[str]]] = []  # open sup/sub: (is_note, text)
+
+    @classmethod
+    def _is_note(cls, attrs) -> bool:
+        values = {k: (v or "").lower() for k, v in attrs}
+        return values.get("role") == "doc-noteref" \
+            or any(c in values.get("class", "") for c in cls.NOTE_CLASSES)
+
+    def _out(self) -> list[str]:
+        return self.marks[-1][1] if self.marks else self.parts
 
     def handle_starttag(self, tag, attrs):
         if tag in self.SKIP:
             self.skipping += 1
+        elif tag in self.SCRIPT_POS:
+            self.marks.append(([self._is_note(attrs)], []))
+        elif tag == "a" and self.marks and (
+                (dict(attrs).get("href") or "").startswith("#") or self._is_note(attrs)):
+            self.marks[-1][0][0] = True
         elif tag in self.BLOCK:
-            self.parts.append(" ")
+            self._out().append(" ")
 
     def handle_endtag(self, tag):
         if tag in self.SKIP:
             self.skipping = max(0, self.skipping - 1)
+        elif tag in self.SCRIPT_POS and self.marks:
+            (is_note,), text = self.marks.pop()
+            self._out().extend([" "] if is_note else text)
         elif tag in self.BLOCK:
-            self.parts.append(" ")
+            self._out().append(" ")
 
     def handle_data(self, data):
         if not self.skipping:
-            self.parts.append(data)
+            self._out().append(data)
+
+    def text(self) -> str:
+        while self.marks:  # an unclosed <sup>/<sub> keeps its text
+            _, text = self.marks.pop()
+            self._out().extend(text)
+        return "".join(self.parts)
 
 
 def html_text(body: str) -> str:
@@ -180,7 +210,7 @@ def html_text(body: str) -> str:
     parser = _Visible()
     parser.feed(body)
     parser.close()
-    return "".join(parser.parts)
+    return parser.text()
 
 
 def pdf_text(data: bytes, page: int | None = None) -> str:

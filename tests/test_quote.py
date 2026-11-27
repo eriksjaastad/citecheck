@@ -149,15 +149,30 @@ def test_html_hides_comments_attributes_and_scripts(tmp_path):
 
 @pytest.mark.parametrize("html", [
     '<p>The treatment reduced mortality<sup><a href="#r1" role="doc-noteref">1</a></sup>.</p>',
-    "<p>The treatment reduced mortality<sup>1,2</sup> in adults.</p>",
+    '<p>The treatment reduced mortality<sup><a href="#b1">1</a>,<a href="#b2">2</a></sup>.</p>',
+    '<p>The treatment reduced mortality<sup class="reference">[<a href="#c">3</a>]</sup>.</p>',
+    '<p>The treatment reduced mortality<sup role="doc-noteref">4</sup> in adults.</p>',
     "<p>The treatment reduced mortality[1] in adults.</p>",
-    "<p>The treatment reduced mortality<sub>a</sub> in adults.</p>",
     "<p>The <i>treat</i>ment reduced <b>mor</b>tality.</p>",
 ])
 def test_reference_markers_and_inline_tags(tmp_path, html):
     (tmp_path / "p.html").write_text(html)
     assert check_quote(Citation("p.html", "The treatment reduced mortality"), root=tmp_path) \
         .status is Status.SUPPORTED
+
+
+@pytest.mark.parametrize("html, whole, cut", [
+    ("<p>The gas is CO<sub>2</sub> here.</p>", "The gas is CO₂", "The gas is CO"),
+    ("<p>The gas is CO<sub>2</sub> here.</p>", "The gas is CO2", "The gas is CO"),
+    ("<p>An area of 25 m<sup>2</sup> was used.</p>", "An area of 25 m²", "An area of 25 m"),
+    ("<p>The count was 10<sup>6</sup> cells.</p>", "The count was 10⁶ cells", "The count was 10"),
+    ("<p>She came 1<sup>st</sup> overall.</p>", "She came 1st overall", "She came 1"),
+    ("<p>Drink H<sub>2</sub>O daily.</p>", "Drink H₂O daily", "Drink H"),
+])
+def test_sub_and_sup_notation_stays_joined(tmp_path, html, whole, cut):
+    (tmp_path / "n.html").write_text(html)
+    assert check_quote(Citation("n.html", whole), root=tmp_path).status is Status.SUPPORTED
+    assert check_quote(Citation("n.html", cut), root=tmp_path).status is Status.NOT_FOUND
 
 
 def test_aes_pdf_with_empty_password(tmp_path):
