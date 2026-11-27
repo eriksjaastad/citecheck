@@ -11,6 +11,7 @@ match must start and end on a word boundary ("4%" is not in "40%").
 from __future__ import annotations
 
 import codecs
+import csv
 import io
 import re
 import unicodedata
@@ -51,24 +52,22 @@ def normalize(text: str) -> str:
     """NFKC-fold and casefold; punctuation and spacing collapse to single spaces.
 
     Kept, because each can change a claim's meaning: letters with their combining
-    marks (दिन is not दीन); numbers with their decimal point, a leading one too (.5 is
-    not 5), and their thousands commas (50,000 is not 50); symbols (+, $, °) and
-    percent; and signs, with every dash or minus written "-":
-    - a sign before a number or a currency amount joins it ("- 10%" and "−10%" are
-      "-10%"; "-$24.99" keeps its minus); an en or em dash counts only when it touches;
-    - a minus right after a number, before a space or punctuation, stays on it
-      ("24.99-", a trailing negative);
-    - parentheses around an amount (a currency symbol, or exactly two decimals) stay
-      on it, spaces inside dropped: "( $ 100.00 )" is "($100.00)".
-    A dash right after a number, with only spaces between, is a range and becomes a
-    space ("10–20" and "10 - 20" are "10 20"); after other punctuation it is a sign
-    ("10, -5" keeps -5). A comma between digits is a thousands separator only before
-    exactly three digits, after at most three that are not a decimal fraction, so the
-    fields of "7084,2025" or "24.99,100" stay apart.
-    Known costs, on the safe side (a quote reads NOT_FOUND): a spaced hyphen before a
-    number in prose ("Acme - 2024") reads as a sign; "100,200" read as one number; a
-    hyphen ending a line after a number ("20-" then "year") stays on it. Not covered:
-    a decimal comma ("3,5") reads as two numbers, so "3" is found in it.
+    marks (दिन is not दीन); digits with every "." or "," between them (50 is not 50.5,
+    50,000, 3,5 or 1,00,000) and a leading decimal point (.5 is not 5); symbols (+, $,
+    °) and percent, a currency symbol joined to the number after it ("$ 5" is "$5").
+
+    Where a mark might belong to a number, it stays on it, so a quote that drops it
+    is NOT_FOUND rather than falsely found:
+    - a dash touching a digit before it stays ("10-20", "24.99-", "2025-01-15");
+    - a sign touching a number or amount after it stays ("-5", "-$24.99", "COVID-19",
+      and "100.00 -24.99", two values, not a range), every dash or minus written "-";
+      "-", "+", "±" and "−" stay with spaces before the number too ("- 10%" is "-10%"),
+      except right after a number ("10 - 20" is "10 20");
+    - parentheses around an amount (a currency symbol, a leading point, two decimals
+      or a thousands comma) stay on it, spaces inside dropped: "( $ 1 234.56 )" is
+      "($1234.56)". Parentheses around other numbers, "(2024)", are spacing.
+    A CSV source is read cell by cell (see ``_decode``), so commas between fields are
+    never mistaken for commas inside a number.
     """
     text = unicodedata.normalize("NFKC", text).casefold()
     out: list[str] = []
@@ -89,25 +88,30 @@ def normalize(text: str) -> str:
         cat = unicodedata.category(ch)
         touching_number = bool(out) and out[-1].isdigit() and not gap
         after_number = bool(out) and out[-1].isdigit() and not punct_gap
+        dash = cat == "Pd" or ch in _SIGNS
         if i == close_at:
             out.append(ch)
-            gap = punct_gap = False
+            gap = True
         elif i < close_at and ch.isspace():
             pass
         elif ch == "(" and (close := _amount_close(text, i)) is not None:
+            gap = True
             emit(ch)
             close_at = close
-        # A spaced en or em dash before a number is a separator ("the score — 10").
-        elif (cat == "Pd" or ch in _SIGNS) and not after_number \
-                and (j := _signed(text, i)) is not None:
+        elif dash and touching_number:
+            out.append(ch if ch in "+±" else "-")
+        elif dash and (j := _signed(text, i)) is not None and (j == i + 1 or not after_number):
             emit(ch if ch in "+±" else "-")
             i = j
             continue
-        elif (cat == "Pd" or ch == "−") and touching_number and _trailing(text, i):
-            out.append("-")
-        elif touching_number and (ch == "." and _digit_at(text, i + 1)
-                                  or ch == "," and _thousands(text, i)):
+        elif ch in ".," and touching_number and _digit_at(text, i + 1):
             out.append(ch)
+        elif cat == "Sc":
+            emit(ch)
+            j = _skip_spaces(text, i + 1)
+            if _number_at(text, j):
+                i = j
+                continue
         elif cat[0] in "LMNS" or ch == "%" or _leading_point(text, i):
             emit(ch)
         else:
@@ -138,42 +142,21 @@ def _skip_spaces(text: str, j: int) -> int:
     return j
 
 
-def _amount_at(text: str, j: int) -> bool:
-    """An amount starts at ``j``: a number, or a currency symbol and then one."""
-    if j < len(text) and unicodedata.category(text[j]) == "Sc":
-        j = _skip_spaces(text, j + 1)
-    return _number_at(text, j)
-
-
 def _signed(text: str, i: int) -> int | None:
-    """Where the signed amount after the sign at ``i`` resumes, or None if it is no sign."""
+    """Where the amount after the sign at ``i`` starts, or None if no amount follows."""
     j = _skip_spaces(text, i + 1) if text[i] in _SPACED_SIGNS else i + 1
-    return j if _amount_at(text, j) else None
-
-
-def _trailing(text: str, i: int) -> bool:
-    """A minus touching the number before it, not a range ("$10-$20") or a hyphenated word."""
-    nxt = i + 1
-    if nxt < len(text) and text[nxt].isalnum():
-        return False
-    return not _amount_at(text, _skip_spaces(text, nxt))
-
-
-def _thousands(text: str, i: int) -> bool:
-    """Is the comma at ``i`` a thousands separator: three digits after, at most three before?"""
-    j = i + 1
-    while _digit_at(text, j):
-        j += 1
-    if j - i - 1 != 3:
-        return False
-    k = i - 1
-    while k >= 0 and text[k].isdigit():
-        k -= 1
-    return i - 1 - k <= 3 and not (k >= 0 and text[k] == ".")
+    k = j
+    if k < len(text) and unicodedata.category(text[k]) == "Sc":
+        k = _skip_spaces(text, k + 1)
+    return j if _number_at(text, k) else None
 
 
 def _amount_close(text: str, i: int) -> int | None:
-    """Index of the ")" closing an amount opened at ``i``: "($1,234)", "( -100.00 )"."""
+    """Index of the ")" closing an amount opened at ``i``, or None.
+
+    An amount has a currency symbol (before or after), a leading point, two decimals or
+    a thousands comma: "($1,234)", "( -100.00 )", "(€1 234.56)", "(100.00 €)", "($.50)".
+    """
     j = _skip_spaces(text, i + 1)
     if j < len(text) and (text[j] in _SIGNS or unicodedata.category(text[j]) == "Pd"):
         j = _skip_spaces(text, j + 1)
@@ -181,15 +164,22 @@ def _amount_close(text: str, i: int) -> int | None:
     if money:
         j = _skip_spaces(text, j + 1)
     start = j
-    while _digit_at(text, j) or (j > start and text[j:j + 1] in (".", ",")
-                                 and _digit_at(text, j + 1)):
-        j += 1
+    while j < len(text):
+        if text[j].isdigit() or (text[j] in ".," and _digit_at(text, j + 1)):
+            j += 1
+        elif text[j] == " " and j > start and re.match(r" \d{3}(?!\d)", text[j:]):
+            j += 1  # "1 234": a space between thousands
+        else:
+            break
     number = text[start:j]
-    if not number or not number[0].isdigit():
+    if not any(c.isdigit() for c in number):
         return None
-    money = money or (len(number) > 3 and number[-3] == "." and number[-2:].isdigit())
-    j = _skip_spaces(text, j)
-    return j if money and j < len(text) and text[j] == ")" else None
+    k = _skip_spaces(text, j)
+    if k < len(text) and unicodedata.category(text[k]) == "Sc":
+        money = True
+        k = _skip_spaces(text, k + 1)
+    money = money or number[0] == "." or "," in number or re.search(r"\.\d\d$", number)
+    return k if money and k < len(text) and text[k] == ")" else None
 
 
 def _unsegmented(ch: str) -> bool:
@@ -352,7 +342,16 @@ def _meta_charset(head: bytes) -> str | None:
     return parser.charset
 
 
-def _decode(data: bytes, page: int | None, *, is_html: bool, charset: str | None = None) -> str:
+def csv_text(text: str) -> str:
+    """A CSV file's text, one cell per tab-separated field, so field commas stay apart."""
+    try:
+        return "\n".join("\t".join(row) for row in csv.reader(io.StringIO(text)))
+    except csv.Error as exc:
+        raise ValueError(f"source is not valid CSV: {exc}") from exc
+
+
+def _decode(data: bytes, page: int | None, *, is_html: bool, charset: str | None = None,
+            is_csv: bool = False) -> str:
     """Source bytes as text. Undecodable bytes raise; they are never replaced and graded."""
     if data[:5] == b"%PDF-":
         return pdf_text(data, page)
@@ -365,6 +364,8 @@ def _decode(data: bytes, page: int | None, *, is_html: bool, charset: str | None
         raise ValueError(f"source declares an unknown encoding {encoding!r}") from None
     except UnicodeDecodeError as exc:
         raise ValueError(f"source is not valid {encoding}: {exc}") from exc
+    if is_csv:
+        return csv_text(text)
     return html_text(text) if is_html else text
 
 
@@ -401,13 +402,15 @@ def check_quote(citation: Citation, *, root: str | Path = ".", network: bool = F
         if resp.code != 200:
             return QuoteResult(Status.NOT_CHECKED, f"source not loaded whole: HTTP {resp.code}")
         text = _decode(resp.body, citation.page, is_html="html" in resp.content_type,
+                       is_csv=resp.content_type == "text/csv",
                        charset=resp.charset)
     else:
         path = _inside(Path(root), citation.source)
         if not path.is_file():
             return QuoteResult(Status.NOT_CHECKED, f"file missing: {citation.source}")
         text = _decode(path.read_bytes(), citation.page,
-                       is_html=path.suffix.lower() in (".html", ".htm"))
+                       is_html=path.suffix.lower() in (".html", ".htm"),
+                       is_csv=path.suffix.lower() == ".csv")
     if not normalize(text):
         raise EmptySourceError(f"no text extracted from {citation.source}")
     if quote_in(citation.quote, text):
