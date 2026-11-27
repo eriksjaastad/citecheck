@@ -17,7 +17,7 @@ and nothing leaves the machine unless you ask for it on that call.
 Pin a tag:
 
 ```
-uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.1.2"
+uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.1.3"
 ```
 
 ## Use

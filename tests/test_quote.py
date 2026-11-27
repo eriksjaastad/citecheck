@@ -39,6 +39,22 @@ def test_part_of_a_word_or_number_is_never_found(word, extra, before):
     assert not quote_in(f"said {word} today", f"He said {longer} today.")
 
 
+AMOUNT = st.builds(lambda cur, whole, cents: f"{cur}{whole:,}{cents}",
+                   st.sampled_from(["", "$", "€"]), st.integers(0, 10**7),
+                   st.sampled_from(["", ".5", ".00", ".25"]))
+SIGNED = st.sampled_from(["-{}", "−{}", "- {}", "{}-", "({})", "( {} )"])
+
+
+@given(AMOUNT, SIGNED)
+def test_a_signed_amount_never_matches_its_unsigned_form(amount, form):
+    signed = form.format(amount)
+    if form.startswith("(") and not (amount[0] in "$€" or amount.endswith((".00", ".25"))):
+        signed = "-" + amount  # parentheses mark only amounts as negative
+    assert quote_in(f"paid {signed} on", f"Paid {signed} on")
+    assert not quote_in(f"paid {amount} on", f"Paid {signed} on")
+    assert not quote_in(f"paid {signed} on", f"Paid {amount} on")
+
+
 @pytest.mark.parametrize("quote, text", [
     ("Москва не сразу строилась", "Говорят, Москва не сразу строилась."),
     ("東京は日本の首都です", "東京は日本の首都です。人口は多い。"),
@@ -56,6 +72,18 @@ def test_part_of_a_word_or_number_is_never_found(word, extra, before):
     ("-5", "Values were 10, -5, and 3"),
     ("pages 10 20", "pages 10 - 20"),
     ("pages 10 20", "pages 10—20"),
+    ("Amount: -$24.99", "Amount: - $24.99"),
+    ("refund ($ 100.00)", "refund ( $100.00 )"),
+    ("refund (100.00)", "refund (100.00)"),
+    ("Smith 2024", "Smith (2024)"),             # parentheses around a non-amount are spacing
+    ("rose 12.5% this year", "rose (12.5%) this year"),
+    ("REI 7084", "REI 7084,2025-01-15"),        # CSV fields, not one number
+    ("24.99", "24.99,100,2025-01-15"),
+    ("cost $1,234,567.89", "cost $1,234,567.89"),
+    ("rate .5%", "rate .5%"),
+    ("between $10 $20", "between $10-$20"),
+    ("between $10 $20", "between $10 – $20"),
+    ("a 20 year study", "a 20-year study"),
 ])
 def test_matches_that_must_pass(quote, text):
     assert quote_in(quote, text)
@@ -74,6 +102,20 @@ def test_matches_that_must_pass(quote, text):
     ("Values were 10, 5, and 3", "Values were 10, -5, and 3"),
     ("rose 10 and 5%", "rose 10 and -5%"),
     ("temps 10, 5", "temps 10, −5"),
+    ("Amount: -$24.99", "Amount: $24.99"),     # a quote's sign is never dropped
+    ("Amount: $24.99", "Amount: -$24.99"),
+    ("Amount: $24.99", "Amount: - $24.99"),
+    ("Amount: 24.99", "Amount: 24.99-"),        # trailing negative
+    ("Amount: 24.99-", "Amount: 24.99"),
+    ("refund ($ 100.00)", "refund $ 100.00"),   # accounting negative
+    ("refund (100.00)", "refund 100.00"),
+    ("refund $100.00", "refund ($100.00)"),
+    ("refund 1,234.56", "refund (1,234.56)"),
+    ("rate .5%", "rate 5%"),
+    ("rate 5%", "rate .5%"),
+    ("change -.5", "change .5"),
+    ("total 1,234", "total 1,234,567"),
+    ("total 1", "total 1,234"),
     ("दिन", "दीन"),
     ("দিন", "দান"),
 ])

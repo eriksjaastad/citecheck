@@ -51,19 +51,30 @@ def normalize(text: str) -> str:
     """NFKC-fold and casefold; punctuation and spacing collapse to single spaces.
 
     Kept, because each can change a claim's meaning: letters with their combining
-    marks (दिन is not दीन); digits with the "." or "," inside a number (50 is not
-    50.5 or 50,000); symbols (+, $, °) and percent; and a sign before a number, joined
-    to it, with every dash or minus written "-" (so "- 10%" and "−10%" are "-10%";
-    an en or em dash counts as a sign only when it touches the digit).
+    marks (दिन is not दीन); numbers with their decimal point, a leading one too (.5 is
+    not 5), and their thousands commas (50,000 is not 50); symbols (+, $, °) and
+    percent; and signs, with every dash or minus written "-":
+    - a sign before a number or a currency amount joins it ("- 10%" and "−10%" are
+      "-10%"; "-$24.99" keeps its minus); an en or em dash counts only when it touches;
+    - a minus right after a number, before a space or punctuation, stays on it
+      ("24.99-", a trailing negative);
+    - parentheses around an amount (a currency symbol, or exactly two decimals) stay
+      on it, spaces inside dropped: "( $ 100.00 )" is "($100.00)".
     A dash right after a number, with only spaces between, is a range and becomes a
     space ("10–20" and "10 - 20" are "10 20"); after other punctuation it is a sign
-    ("10, -5" keeps -5). Known cost, on the safe side: a spaced hyphen before a number
-    in prose ("Acme - 2024") reads as a sign, so a quote dropping it is NOT_FOUND.
+    ("10, -5" keeps -5). A comma between digits is a thousands separator only before
+    exactly three digits, after at most three that are not a decimal fraction, so the
+    fields of "7084,2025" or "24.99,100" stay apart.
+    Known costs, on the safe side (a quote reads NOT_FOUND): a spaced hyphen before a
+    number in prose ("Acme - 2024") reads as a sign; "100,200" read as one number; a
+    hyphen ending a line after a number ("20-" then "year") stays on it. Not covered:
+    a decimal comma ("3,5") reads as two numbers, so "3" is found in it.
     """
     text = unicodedata.normalize("NFKC", text).casefold()
     out: list[str] = []
     gap = False        # punctuation or space skipped since the last kept character
     punct_gap = False  # ...and some of it was not space
+    close_at = -1      # index of the ")" closing an amount in parentheses
 
     def emit(ch: str) -> None:
         nonlocal gap, punct_gap
@@ -76,26 +87,109 @@ def normalize(text: str) -> str:
     while i < n:
         ch = text[i]
         cat = unicodedata.category(ch)
+        touching_number = bool(out) and out[-1].isdigit() and not gap
         after_number = bool(out) and out[-1].isdigit() and not punct_gap
-        # A spaced en or em dash before a number is a separator ("the score — 10").
-        if (cat == "Pd" or ch in _SIGNS) and not after_number:
-            j = i + 1
-            while ch in _SPACED_SIGNS and j < n and text[j].isspace():
-                j += 1
-            if j < n and text[j].isdigit():
-                emit(ch if ch in "+±" else "-")
-                i = j
-                continue
-        if ch in ".," and out and out[-1].isdigit() and not gap and i + 1 < n \
-                and text[i + 1].isdigit():
+        if i == close_at:
             out.append(ch)
-        elif cat[0] in "LMNS" or ch == "%":
+            gap = punct_gap = False
+        elif i < close_at and ch.isspace():
+            pass
+        elif ch == "(" and (close := _amount_close(text, i)) is not None:
+            emit(ch)
+            close_at = close
+        # A spaced en or em dash before a number is a separator ("the score — 10").
+        elif (cat == "Pd" or ch in _SIGNS) and not after_number \
+                and (j := _signed(text, i)) is not None:
+            emit(ch if ch in "+±" else "-")
+            i = j
+            continue
+        elif (cat == "Pd" or ch == "−") and touching_number and _trailing(text, i):
+            out.append("-")
+        elif touching_number and (ch == "." and _digit_at(text, i + 1)
+                                  or ch == "," and _thousands(text, i)):
+            out.append(ch)
+        elif cat[0] in "LMNS" or ch == "%" or _leading_point(text, i):
             emit(ch)
         else:
             gap = True
             punct_gap = punct_gap or not ch.isspace()
         i += 1
     return "".join(out)
+
+
+def _digit_at(text: str, j: int) -> bool:
+    return j < len(text) and text[j].isdigit()
+
+
+def _number_at(text: str, j: int) -> bool:
+    """A number starts at ``j``: a digit, or a decimal point and a digit."""
+    return _digit_at(text, j) or (j < len(text) and text[j] == "." and _digit_at(text, j + 1))
+
+
+def _leading_point(text: str, i: int) -> bool:
+    """A decimal point that starts a number (".5"), not one ending a word or an ellipsis."""
+    return text[i] == "." and _digit_at(text, i + 1) \
+        and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "."))
+
+
+def _skip_spaces(text: str, j: int) -> int:
+    while j < len(text) and text[j].isspace():
+        j += 1
+    return j
+
+
+def _amount_at(text: str, j: int) -> bool:
+    """An amount starts at ``j``: a number, or a currency symbol and then one."""
+    if j < len(text) and unicodedata.category(text[j]) == "Sc":
+        j = _skip_spaces(text, j + 1)
+    return _number_at(text, j)
+
+
+def _signed(text: str, i: int) -> int | None:
+    """Where the signed amount after the sign at ``i`` resumes, or None if it is no sign."""
+    j = _skip_spaces(text, i + 1) if text[i] in _SPACED_SIGNS else i + 1
+    return j if _amount_at(text, j) else None
+
+
+def _trailing(text: str, i: int) -> bool:
+    """A minus touching the number before it, not a range ("$10-$20") or a hyphenated word."""
+    nxt = i + 1
+    if nxt < len(text) and text[nxt].isalnum():
+        return False
+    return not _amount_at(text, _skip_spaces(text, nxt))
+
+
+def _thousands(text: str, i: int) -> bool:
+    """Is the comma at ``i`` a thousands separator: three digits after, at most three before?"""
+    j = i + 1
+    while _digit_at(text, j):
+        j += 1
+    if j - i - 1 != 3:
+        return False
+    k = i - 1
+    while k >= 0 and text[k].isdigit():
+        k -= 1
+    return i - 1 - k <= 3 and not (k >= 0 and text[k] == ".")
+
+
+def _amount_close(text: str, i: int) -> int | None:
+    """Index of the ")" closing an amount opened at ``i``: "($1,234)", "( -100.00 )"."""
+    j = _skip_spaces(text, i + 1)
+    if j < len(text) and (text[j] in _SIGNS or unicodedata.category(text[j]) == "Pd"):
+        j = _skip_spaces(text, j + 1)
+    money = j < len(text) and unicodedata.category(text[j]) == "Sc"
+    if money:
+        j = _skip_spaces(text, j + 1)
+    start = j
+    while _digit_at(text, j) or (j > start and text[j:j + 1] in (".", ",")
+                                 and _digit_at(text, j + 1)):
+        j += 1
+    number = text[start:j]
+    if not number or not number[0].isdigit():
+        return None
+    money = money or (len(number) > 3 and number[-3] == "." and number[-2:].isdigit())
+    j = _skip_spaces(text, j)
+    return j if money and j < len(text) and text[j] == ")" else None
 
 
 def _unsegmented(ch: str) -> bool:
