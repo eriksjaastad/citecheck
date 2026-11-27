@@ -20,7 +20,7 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-from .fetch import BLOCKED_CODES, ConfigError, Fetcher, FetchError
+from .fetch import BLOCKED_CODES, GONE_CODES, ConfigError, Fetcher, FetchError
 from .record import Citation
 from .status import Status
 
@@ -39,6 +39,10 @@ class EmptySourceError(Exception):
     Raised rather than reported as NOT_FOUND: saying the quote is missing from a
     page we could not read would accuse the claim of something we never checked.
     """
+
+
+class PageMissingError(ValueError):
+    """The cited page is not in the source: past the end, or the source is not a PDF."""
 
 
 @dataclass(frozen=True)
@@ -219,7 +223,7 @@ def pdf_text(data: bytes, page: int | None = None) -> str:
     if page is None:
         return "\n".join(p.extract_text() or "" for p in reader.pages)
     if page > len(reader.pages):
-        raise ValueError(f"page {page} is past the end of a {len(reader.pages)}-page PDF")
+        raise PageMissingError(f"page {page} is past the end of a {len(reader.pages)}-page PDF")
     return reader.pages[page - 1].extract_text() or ""
 
 
@@ -263,7 +267,7 @@ def _decode(data: bytes, page: int | None, *, is_html: bool, charset: str | None
     if data[:5] == b"%PDF-":
         return pdf_text(data, page)
     if page is not None:
-        raise ValueError("citation has a page, but the source is not a PDF")
+        raise PageMissingError("citation has a page, but the source is not a PDF")
     encoding = _encoding(data, charset, is_html)
     try:
         text = data.decode(encoding)
@@ -282,6 +286,41 @@ def _inside(root: Path, name: str) -> Path:
     return path
 
 
+@dataclass(frozen=True)
+class _Source:
+    """A citation's source bytes, or why they could not be read whole."""
+
+    data: bytes | None
+    is_html: bool = False
+    charset: str | None = None
+    reason: str = ""
+    blocked: bool = False   # the server refused us
+    gone: bool = False      # the file is missing, or the server says 404/410
+
+
+def _load(citation: Citation, root: str | Path, network: bool,
+          fetcher: Fetcher | None) -> _Source:
+    if citation.is_url:
+        if not network:
+            return _Source(None, reason="offline; pass network=True")
+        if fetcher is None:
+            raise ConfigError("network=True needs a Fetcher")
+        try:
+            resp = fetcher._get(citation.source)
+        except FetchError as exc:
+            return _Source(None, reason=f"not loaded: {exc}")
+        if resp.code in BLOCKED_CODES:
+            return _Source(None, reason=f"HTTP {resp.code}", blocked=True)
+        if resp.code != 200:
+            return _Source(None, reason=f"source not loaded whole: HTTP {resp.code}",
+                           gone=resp.code in GONE_CODES)
+        return _Source(resp.body, "html" in resp.content_type, resp.charset)
+    path = _inside(Path(root), citation.source)
+    if not path.is_file():
+        return _Source(None, reason=f"file missing: {citation.source}", gone=True)
+    return _Source(path.read_bytes(), path.suffix.lower() in (".html", ".htm"))
+
+
 def check_quote(citation: Citation, *, root: str | Path = ".", network: bool = False,
                 fetcher: Fetcher | None = None) -> QuoteResult:
     """Grade one citation's quote against its source.
@@ -293,27 +332,10 @@ def check_quote(citation: Citation, *, root: str | Path = ".", network: bool = F
     """
     if not normalize(citation.quote):
         raise ValueError(f"citation of {citation.source} has no quote to check")
-    if citation.is_url:
-        if not network:
-            return QuoteResult(Status.NOT_CHECKED, "offline; pass network=True")
-        if fetcher is None:
-            raise ConfigError("network=True needs a Fetcher")
-        try:
-            resp = fetcher._get(citation.source)
-        except FetchError as exc:
-            return QuoteResult(Status.NOT_CHECKED, f"not loaded: {exc}")
-        if resp.code in BLOCKED_CODES:
-            return QuoteResult(Status.BLOCKED, f"HTTP {resp.code}")
-        if resp.code != 200:
-            return QuoteResult(Status.NOT_CHECKED, f"source not loaded whole: HTTP {resp.code}")
-        text = _decode(resp.body, citation.page, is_html="html" in resp.content_type,
-                       charset=resp.charset)
-    else:
-        path = _inside(Path(root), citation.source)
-        if not path.is_file():
-            return QuoteResult(Status.NOT_CHECKED, f"file missing: {citation.source}")
-        text = _decode(path.read_bytes(), citation.page,
-                       is_html=path.suffix.lower() in (".html", ".htm"))
+    src = _load(citation, root, network, fetcher)
+    if src.data is None:
+        return QuoteResult(Status.BLOCKED if src.blocked else Status.NOT_CHECKED, src.reason)
+    text = _decode(src.data, citation.page, is_html=src.is_html, charset=src.charset)
     if not normalize(text):
         raise EmptySourceError(f"no text extracted from {citation.source}")
     if quote_in(citation.quote, text):
