@@ -12,7 +12,7 @@ and nothing leaves the machine unless you ask for it on that call.
 - **Link check:** does the link load? `BLOCKED` (401, 403, 429, 451) is kept separate
   from `NOT_FOUND` (404, 410).
 - **DOI check:** does the DOI exist, and what title and journal does its record give?
-  Crossref first, then the DOI registry for DOIs Crossref does not hold (DataCite).
+  Crossref, then DataCite (arXiv, Zenodo), then the DOI registry itself.
 - **Drift check:** has a cited file changed since it was cited? A moved hash (`HASH`)
   is kept apart from a lost quote or page (`QUOTE`) and a missing file (`MISSING`).
 
@@ -52,7 +52,8 @@ raises `ConfigError`. One `Fetcher` per run spaces requests to the same host, re
 hops included; `Fetcher(USER_AGENT, cache=True)` also fetches each URL only once, keeping
 error answers and failures as they came, and `max_requests=N` stops the run with
 `RequestCapError` at the cap. A DOI is `NOT_FOUND` only when the DOI registry itself
-has no record of it. Checking a citation with no quote raises `ValueError`. A source
+has no record of it, and `REGISTERED`, not `FOUND`, when it exists but no record gives
+a title to compare. A drift check raises on a source with no text, like a quote check. Checking a citation with no quote raises `ValueError`. A source
 that loads but yields no text raises `EmptySourceError` rather than calling the quote
 missing. A quote against a source that refused us is `BLOCKED`, against one that is
 gone or unreachable `NOT_CHECKED`, never `NOT_FOUND`.

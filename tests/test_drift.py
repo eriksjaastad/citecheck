@@ -3,7 +3,7 @@ import hashlib
 import pytest
 from conftest import ROUTES, make_pdf
 
-from citecheck import Citation, Drift, Fetcher, check_drift
+from citecheck import Citation, Drift, EmptySourceError, Fetcher, check_drift
 
 PDF = make_pdf(["Cover page", "Revenue rose sharply in Q3"])
 
@@ -35,10 +35,23 @@ def test_lost_quote_is_quote_even_though_bytes_moved(tmp_path):
     assert check_drift(c, root=tmp_path).status is Drift.QUOTE
 
 
-def test_emptied_file_is_quote(tmp_path):
-    c = cite(tmp_path, b"annual entry", "annual entry")
-    (tmp_path / "note.txt").write_bytes(b"  \n")
-    assert check_drift(c, root=tmp_path).status is Drift.QUOTE
+@pytest.mark.parametrize(("name", "data"), [
+    ("note.txt", b"  \n"), ("page.html", b"<html><script>render()</script></html>"),
+    ("scan.pdf", make_pdf([""])),
+])
+@pytest.mark.parametrize("edited", [False, True])
+def test_a_source_with_no_text_raises(tmp_path, name, data, edited):
+    """Unreadable is not proof the quote went, with the hash unchanged or not."""
+    c = cite(tmp_path, data if not edited else b"annual entry", "annual entry", name)
+    (tmp_path / name).write_bytes(data)
+    with pytest.raises(EmptySourceError):
+        check_drift(c, root=tmp_path)
+
+
+@pytest.mark.parametrize("quote", [" ", "...", " … "])
+def test_a_quote_with_no_words_raises(tmp_path, quote):
+    with pytest.raises(ValueError, match="no words"):
+        check_drift(cite(tmp_path, b"annual entry", quote), root=tmp_path)
 
 
 def test_missing_file(tmp_path):

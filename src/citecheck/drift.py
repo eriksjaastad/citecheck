@@ -14,7 +14,7 @@ from enum import Enum
 from pathlib import Path
 
 from .fetch import Fetcher
-from .quote import PageMissingError, _decode, _load, normalize, quote_in
+from .quote import EmptySourceError, PageMissingError, _decode, _load, normalize, quote_in
 from .record import Citation
 
 
@@ -37,11 +37,15 @@ def check_drift(citation: Citation, *, root: str | Path = ".", network: bool = F
     """Compare a source with the sha256 and quote recorded when it was cited.
 
     The quote is checked first: a lost quote is QUOTE even when the bytes also moved.
-    A citation with no quote is checked by hash alone. One with no sha256 raises,
-    since there is nothing to compare against. Local paths resolve under ``root``.
+    A citation whose quote is "" is checked by hash alone. These raise rather than
+    guess: no sha256 (nothing to compare against), a quote with no words in it, and a
+    source with no text to look in (EmptySourceError: a scanned PDF or a script-built
+    page is unreadable, not proof the quote went). Local paths resolve under ``root``.
     """
     if citation.sha256 is None:
         raise ValueError(f"citation of {citation.source} has no sha256 to compare")
+    if citation.quote and not normalize(citation.quote):
+        raise ValueError(f"citation of {citation.source} has a quote with no words in it")
     src = _load(citation, root, network, fetcher)
     if src.data is None:
         return DriftResult(Drift.MISSING if src.gone else Drift.NOT_CHECKED, src.reason)
@@ -51,7 +55,7 @@ def check_drift(citation: Citation, *, root: str | Path = ".", network: bool = F
         except PageMissingError as exc:
             return DriftResult(Drift.QUOTE, str(exc))
         if not normalize(text):
-            return DriftResult(Drift.QUOTE, "source has no text now")
+            raise EmptySourceError(f"no text extracted from {citation.source}")
         if not quote_in(citation.quote, text):
             return DriftResult(Drift.QUOTE, "quote not in the source now")
     if hashlib.sha256(src.data).hexdigest() != citation.sha256:

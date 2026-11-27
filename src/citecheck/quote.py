@@ -153,6 +153,9 @@ class _Visible(HTMLParser):
     marked as a note (role doc-noteref; class reference, footnote, noteref or cite).
     An unmarked <sup>1</sup> after a word can't be told from m<sup>2</sup>, so it
     joins; a quote that omits it is NOT_FOUND, never falsely SUPPORTED.
+
+    Namespaced XML tags (JATS in Crossref abstracts: <jats:p>, <jats:sup>) are read by
+    their local name, and JATS's own blocks (<jats:title>, <jats:sec>) break words too.
     """
 
     SKIP = frozenset({"script", "style", "noscript", "template"})
@@ -160,6 +163,8 @@ class _Visible(HTMLParser):
                        "dt", "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5",
                        "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section",
                        "table", "td", "th", "tr", "ul"})
+    XML_BLOCK = frozenset({"abstract", "caption", "def-item", "disp-quote", "fig", "label",
+                           "list", "list-item", "ref", "sec", "table-wrap", "title"})
     SCRIPT_POS = frozenset({"sup", "sub"})
     NOTE_CLASSES = ("reference", "footnote", "noteref", "cite")
 
@@ -178,7 +183,13 @@ class _Visible(HTMLParser):
     def _out(self) -> list[str]:
         return self.marks[-1][1] if self.marks else self.parts
 
+    def _local(self, tag: str) -> tuple[str, bool]:
+        """A tag's local name, and whether it is a block."""
+        local = tag.rpartition(":")[2]
+        return local, local in self.BLOCK or (local != tag and local in self.XML_BLOCK)
+
     def handle_starttag(self, tag, attrs):
+        tag, block = self._local(tag)
         if tag in self.SKIP:
             self.skipping += 1
         elif tag in self.SCRIPT_POS:
@@ -186,16 +197,17 @@ class _Visible(HTMLParser):
         elif tag == "a" and self.marks and (
                 (dict(attrs).get("href") or "").startswith("#") or self._is_note(attrs)):
             self.marks[-1][0][0] = True
-        elif tag in self.BLOCK:
+        elif block:
             self._out().append(" ")
 
     def handle_endtag(self, tag):
+        tag, block = self._local(tag)
         if tag in self.SKIP:
             self.skipping = max(0, self.skipping - 1)
         elif tag in self.SCRIPT_POS and self.marks:
             (is_note,), text = self.marks.pop()
             self._out().extend([" "] if is_note else text)
-        elif tag in self.BLOCK:
+        elif block:
             self._out().append(" ")
 
     def handle_data(self, data):
