@@ -11,19 +11,24 @@ and nothing leaves the machine unless you ask for it on that call.
   any script, and quotes cut with an ellipsis.
 - **Link check:** does the link load? `BLOCKED` (401, 403, 429, 451) is kept separate
   from `NOT_FOUND` (404, 410).
+- **DOI check:** does the DOI exist, and what title and journal does its record give?
+  Crossref, then DataCite (arXiv, Zenodo), then the DOI registry itself.
+- **Drift check:** has a cited file changed since it was cited? A moved hash (`HASH`)
+  is kept apart from a lost quote or page (`QUOTE`) and a missing file (`MISSING`).
 
 ## Install
 
 Pin a tag:
 
 ```
-uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.1.3"
+uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.2.0"
 ```
 
 ## Use
 
 ```python
-from citecheck import Citation, Fetcher, Status, check_link, check_quote, map_label
+from citecheck import (Citation, Fetcher, Status, check_doi, check_drift, check_link,
+                       check_quote, map_label)
 
 cite = Citation(source="docs/report.pdf", quote="revenue rose … in the third quarter", page=4)
 check_quote(cite, root=".").status          # Status.SUPPORTED, or NOT_FOUND
@@ -37,12 +42,18 @@ check_link("https://example.org/page", network=True, fetcher=fetcher).status  # 
 
 LABELS = {"✅": Status.SUPPORTED, "❌": Status.CONTRADICTED, "⚪": Status.NOT_CHECKED}
 map_label("✅", LABELS)                      # unknown labels raise, never default
+
+check_doi("10.1038/nature12373", network=True, fetcher=fetcher)  # DoiResult: status, title, journal
+check_drift(Citation("data/rules.yaml", "the quoted rule", sha256=SHA_WHEN_CITED)).status  # Drift
 ```
 
 Network checks need a `Fetcher`, and a `Fetcher` needs a user agent; either missing
 raises `ConfigError`. One `Fetcher` per run spaces requests to the same host, redirect
 hops included; `Fetcher(USER_AGENT, cache=True)` also fetches each URL only once, keeping
-error answers and failures as they came. Checking a citation with no quote raises `ValueError`. A source
+error answers and failures as they came, and `max_requests=N` stops the run with
+`RequestCapError` at the cap. A DOI is `NOT_FOUND` only when the DOI registry itself
+has no record of it, and `REGISTERED`, not `FOUND`, when it exists but no record gives
+a title to compare. A drift check raises on a source with no text, like a quote check. Checking a citation with no quote raises `ValueError`. A source
 that loads but yields no text raises `EmptySourceError` rather than calling the quote
 missing. A quote against a source that refused us is `BLOCKED`, against one that is
 gone or unreachable `NOT_CHECKED`, never `NOT_FOUND`.

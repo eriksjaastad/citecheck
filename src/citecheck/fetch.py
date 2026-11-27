@@ -26,6 +26,10 @@ class ConfigError(Exception):
     """Something the caller must supply is missing: a fetcher, a user agent."""
 
 
+class RequestCapError(Exception):
+    """The Fetcher has sent its ``max_requests``; the run stops instead of going on unchecked."""
+
+
 class FetchError(Exception):
     """No complete HTTP answer: DNS, refused, timeout, TLS, truncated or oversized body."""
 
@@ -96,12 +100,20 @@ class Fetcher:
     against one page cost one request. It stores the answer as it came: an HTTP error
     code stays that code, and a failed fetch raises the same FetchError again. Off by
     default, so nothing is reused unless the caller asks; make a new Fetcher per run.
+
+    ``max_requests`` caps every request it sends, redirect hops included; the one
+    past the cap raises RequestCapError rather than being skipped.
     """
 
     def __init__(self, user_agent: str, *, timeout: float = 20, min_interval: float = 1.0,
-                 cache: bool = False):
+                 cache: bool = False, max_requests: int | None = None):
         if not user_agent or not user_agent.strip():
             raise ConfigError("a user agent is required for network checks")
+        if max_requests is not None and (isinstance(max_requests, bool)
+                                         or not isinstance(max_requests, int) or max_requests < 1):
+            raise ConfigError(f"max_requests must be a whole number of 1 or more, got {max_requests!r}")
+        self.max_requests = max_requests
+        self.sent = 0
         self.user_agent = user_agent
         self.timeout = timeout
         self.min_interval = min_interval
@@ -111,6 +123,9 @@ class Fetcher:
             {} if cache else None
 
     def _wait(self, host: str) -> None:
+        if self.max_requests is not None and self.sent >= self.max_requests:
+            raise RequestCapError(f"request cap of {self.max_requests} reached before {host}")
+        self.sent += 1
         last = self._last.get(host)
         if last is not None:
             gap = self.min_interval - (time.monotonic() - last)

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-from .fetch import BLOCKED_CODES, ConfigError, Fetcher, FetchError
+from .fetch import BLOCKED_CODES, GONE_CODES, ConfigError, Fetcher, FetchError
 from .record import Citation
 from .status import Status
 
@@ -40,6 +40,10 @@ class EmptySourceError(Exception):
     Raised rather than reported as NOT_FOUND: saying the quote is missing from a
     page we could not read would accuse the claim of something we never checked.
     """
+
+
+class PageMissingError(ValueError):
+    """The cited page is not in the source: past the end, or the source is not a PDF."""
 
 
 @dataclass(frozen=True)
@@ -253,6 +257,9 @@ class _Visible(HTMLParser):
     marked as a note (role doc-noteref; class reference, footnote, noteref or cite).
     An unmarked <sup>1</sup> after a word can't be told from m<sup>2</sup>, so it
     joins; a quote that omits it is NOT_FOUND, never falsely SUPPORTED.
+
+    Namespaced XML tags (JATS in Crossref abstracts: <jats:p>, <jats:sup>) are read by
+    their local name, and JATS's own blocks (<jats:title>, <jats:sec>) break words too.
     """
 
     SKIP = frozenset({"script", "style", "noscript", "template"})
@@ -260,6 +267,8 @@ class _Visible(HTMLParser):
                        "dt", "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5",
                        "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section",
                        "table", "td", "th", "tr", "ul"})
+    XML_BLOCK = frozenset({"abstract", "caption", "def-item", "disp-quote", "fig", "label",
+                           "list", "list-item", "ref", "sec", "table-wrap", "title"})
     SCRIPT_POS = frozenset({"sup", "sub"})
     NOTE_CLASSES = ("reference", "footnote", "noteref", "cite")
 
@@ -278,7 +287,13 @@ class _Visible(HTMLParser):
     def _out(self) -> list[str]:
         return self.marks[-1][1] if self.marks else self.parts
 
+    def _local(self, tag: str) -> tuple[str, bool]:
+        """A tag's local name, and whether it is a block."""
+        local = tag.rpartition(":")[2]
+        return local, local in self.BLOCK or (local != tag and local in self.XML_BLOCK)
+
     def handle_starttag(self, tag, attrs):
+        tag, block = self._local(tag)
         if tag in self.SKIP:
             self.skipping += 1
         elif tag in self.SCRIPT_POS:
@@ -286,16 +301,17 @@ class _Visible(HTMLParser):
         elif tag == "a" and self.marks and (
                 (dict(attrs).get("href") or "").startswith("#") or self._is_note(attrs)):
             self.marks[-1][0][0] = True
-        elif tag in self.BLOCK:
+        elif block:
             self._out().append(" ")
 
     def handle_endtag(self, tag):
+        tag, block = self._local(tag)
         if tag in self.SKIP:
             self.skipping = max(0, self.skipping - 1)
         elif tag in self.SCRIPT_POS and self.marks:
             (is_note,), text = self.marks.pop()
             self._out().extend([" "] if is_note else text)
-        elif tag in self.BLOCK:
+        elif block:
             self._out().append(" ")
 
     def handle_data(self, data):
@@ -323,7 +339,7 @@ def pdf_text(data: bytes, page: int | None = None) -> str:
     if page is None:
         return "\n".join(p.extract_text() or "" for p in reader.pages)
     if page > len(reader.pages):
-        raise ValueError(f"page {page} is past the end of a {len(reader.pages)}-page PDF")
+        raise PageMissingError(f"page {page} is past the end of a {len(reader.pages)}-page PDF")
     return reader.pages[page - 1].extract_text() or ""
 
 
@@ -376,7 +392,7 @@ def _decode(data: bytes, page: int | None, *, is_html: bool, charset: str | None
     if data[:5] == b"%PDF-":
         return pdf_text(data, page)
     if page is not None:
-        raise ValueError("citation has a page, but the source is not a PDF")
+        raise PageMissingError("citation has a page, but the source is not a PDF")
     encoding = _encoding(data, charset, is_html)
     try:
         text = data.decode(encoding)
@@ -397,6 +413,44 @@ def _inside(root: Path, name: str) -> Path:
     return path
 
 
+@dataclass(frozen=True)
+class _Source:
+    """A citation's source bytes, or why they could not be read whole."""
+
+    data: bytes | None
+    is_html: bool = False
+    charset: str | None = None
+    is_csv: bool = False
+    reason: str = ""
+    blocked: bool = False   # the server refused us
+    gone: bool = False      # the file is missing, or the server says 404/410
+
+
+def _load(citation: Citation, root: str | Path, network: bool,
+          fetcher: Fetcher | None) -> _Source:
+    if citation.is_url:
+        if not network:
+            return _Source(None, reason="offline; pass network=True")
+        if fetcher is None:
+            raise ConfigError("network=True needs a Fetcher")
+        try:
+            resp = fetcher._get(citation.source)
+        except FetchError as exc:
+            return _Source(None, reason=f"not loaded: {exc}")
+        if resp.code in BLOCKED_CODES:
+            return _Source(None, reason=f"HTTP {resp.code}", blocked=True)
+        if resp.code != 200:
+            return _Source(None, reason=f"source not loaded whole: HTTP {resp.code}",
+                           gone=resp.code in GONE_CODES)
+        return _Source(resp.body, "html" in resp.content_type, resp.charset,
+                       is_csv=resp.content_type == "text/csv")
+    path = _inside(Path(root), citation.source)
+    if not path.is_file():
+        return _Source(None, reason=f"file missing: {citation.source}", gone=True)
+    suffix = path.suffix.lower()
+    return _Source(path.read_bytes(), suffix in (".html", ".htm"), is_csv=suffix == ".csv")
+
+
 def check_quote(citation: Citation, *, root: str | Path = ".", network: bool = False,
                 fetcher: Fetcher | None = None) -> QuoteResult:
     """Grade one citation's quote against its source.
@@ -408,29 +462,11 @@ def check_quote(citation: Citation, *, root: str | Path = ".", network: bool = F
     """
     if not normalize(citation.quote):
         raise ValueError(f"citation of {citation.source} has no quote to check")
-    if citation.is_url:
-        if not network:
-            return QuoteResult(Status.NOT_CHECKED, "offline; pass network=True")
-        if fetcher is None:
-            raise ConfigError("network=True needs a Fetcher")
-        try:
-            resp = fetcher._get(citation.source)
-        except FetchError as exc:
-            return QuoteResult(Status.NOT_CHECKED, f"not loaded: {exc}")
-        if resp.code in BLOCKED_CODES:
-            return QuoteResult(Status.BLOCKED, f"HTTP {resp.code}")
-        if resp.code != 200:
-            return QuoteResult(Status.NOT_CHECKED, f"source not loaded whole: HTTP {resp.code}")
-        text = _decode(resp.body, citation.page, is_html="html" in resp.content_type,
-                       is_csv=resp.content_type == "text/csv",
-                       charset=resp.charset)
-    else:
-        path = _inside(Path(root), citation.source)
-        if not path.is_file():
-            return QuoteResult(Status.NOT_CHECKED, f"file missing: {citation.source}")
-        text = _decode(path.read_bytes(), citation.page,
-                       is_html=path.suffix.lower() in (".html", ".htm"),
-                       is_csv=path.suffix.lower() == ".csv")
+    src = _load(citation, root, network, fetcher)
+    if src.data is None:
+        return QuoteResult(Status.BLOCKED if src.blocked else Status.NOT_CHECKED, src.reason)
+    text = _decode(src.data, citation.page, is_html=src.is_html, charset=src.charset,
+                   is_csv=src.is_csv)
     if not normalize(text):
         raise EmptySourceError(f"no text extracted from {citation.source}")
     if quote_in(citation.quote, text):
