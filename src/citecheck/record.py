@@ -10,6 +10,7 @@ import re
 from dataclasses import asdict, dataclass, fields
 from datetime import date
 from typing import Any
+from urllib.parse import urlsplit
 
 from .status import Status
 
@@ -45,7 +46,7 @@ class Citation:
 
     @property
     def is_url(self) -> bool:
-        return self.source.startswith(("http://", "https://"))
+        return urlsplit(self.source).scheme in ("http", "https")  # urlsplit lowercases it
 
 
 @dataclass(frozen=True)

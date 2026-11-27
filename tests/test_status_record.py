@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from citecheck import Citation, Claim, Status, UnknownLabelError, map_label, tally
+from citecheck import Citation, Claim, LinkStatus, Status, UnknownLabelError, map_label, tally
 
 LABELS = {"✅": Status.SUPPORTED, "❌": Status.CONTRADICTED, "⚪": Status.NOT_CHECKED}
 
@@ -26,6 +26,8 @@ def test_tally_counts_every_status_and_refuses_empty():
     assert len(counts) == len(Status)
     with pytest.raises(ValueError):
         tally([])
+    with pytest.raises(TypeError):
+        tally([Status.SUPPORTED, LinkStatus.ERROR])
 
 
 def test_new_claim_is_not_checked():

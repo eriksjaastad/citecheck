@@ -43,9 +43,14 @@ def map_label(label: str, mapping: Mapping[str, Status]) -> Status:
 def tally(statuses: Iterable[Status]) -> dict[Status, int]:
     """Count of each status, every status present (zero included). Never a score.
 
-    An empty input raises: a run that checked nothing has no tally to report.
+    An empty input raises: a run that checked nothing has no tally to report. So does
+    anything that is not a Status (a LinkStatus, a raw label), rather than vanish.
     """
-    counts = Counter(statuses)
+    items = list(statuses)
+    for item in items:
+        if not isinstance(item, Status):
+            raise TypeError(f"tally counts Status values only, got {item!r}")
+    counts = Counter(items)
     if not counts:
         raise ValueError("no results to tally")
     return {s: counts.get(s, 0) for s in Status}

@@ -43,15 +43,28 @@ ROUTES: dict[str, tuple[int, str, bytes]] = {
     "/limited": (429, "text/html", b"slow down"),
     "/gone": (404, "text/html", b"missing"),
     "/broken": (500, "text/html", b"oops"),
+    "/cp1252": (200, "text/html", b'<meta charset="windows-1252"><p>Le caf\xe9 est ouvert</p>'),
+    "/partial": (206, "text/plain", b"words that would be checked"),
+    "/huge": (200, "text/plain", b"x " * (4 * 1024 * 1024) + b"words that would be checked"),
+    "/%D0%BF%D1%83%D1%82%D1%8C": (200, "text/plain", b"cyrillic path"),
 }
+REDIRECTS = {"/to-ftp": "ftp://127.0.0.1/x", "/hop": "/page"}
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/to-ftp":
+        if self.path in REDIRECTS:
             self.send_response(302)
-            self.send_header("Location", "ftp://127.0.0.1/x")
+            self.send_header("Location", REDIRECTS[self.path])
+            self.send_header("Content-Length", "0")
             self.end_headers()
+            return
+        if self.path == "/short":  # promises more bytes than it sends
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", "1000")
+            self.end_headers()
+            self.wfile.write(b"words that would be checked")
             return
         code, ctype, body = ROUTES.get(self.path, (404, "text/plain", b""))
         self.send_response(code)

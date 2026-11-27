@@ -1,3 +1,5 @@
+import codecs
+
 import pytest
 from conftest import make_pdf
 from hypothesis import given
@@ -10,47 +12,79 @@ from citecheck import (
     Fetcher,
     Status,
     check_quote,
-    normalize,
     quote_in,
 )
 
 UA = "citecheck-tests/0"
+WORD = st.text(st.characters(categories=["Ll", "Lu", "Nd"]), min_size=1, max_size=8)
+ASCII_WORD = st.text("abcdefghij0123456789", min_size=1, max_size=8)
 
 
 def fetcher():
     return Fetcher(UA, min_interval=0)
 
 
-@given(st.text(min_size=1), st.integers(0, 50), st.integers(1, 80))
-def test_any_slice_of_a_text_is_found_in_it(text, start, length):
-    quote = text[start:start + length]
-    if not normalize(quote) or not normalize(text):
-        return
-    assert quote_in(quote, text, min_fragment=1)
+@given(st.lists(WORD, min_size=1, max_size=12), st.data())
+def test_any_run_of_whole_words_is_found(words, data):
+    start = data.draw(st.integers(0, len(words) - 1))
+    end = data.draw(st.integers(start + 1, len(words)))
+    sep = data.draw(st.sampled_from([" ", ", ", "\n", " — ", "; "]))
+    assert quote_in(" ".join(words[start:end]), sep.join(words) + ".")
+
+
+@given(ASCII_WORD, st.text("abcdefghij0123456789", min_size=1, max_size=3), st.booleans())
+def test_part_of_a_word_or_number_is_never_found(word, extra, before):
+    longer = extra + word if before else word + extra
+    assert not quote_in(f"said {word} today", f"He said {longer} today.")
 
 
 @pytest.mark.parametrize("quote, text", [
     ("Москва не сразу строилась", "Говорят, Москва не сразу строилась."),
     ("東京は日本の首都です", "東京は日本の首都です。人口は多い。"),
-    ("“Employees: approx. 450”", "Employees:   Approx. 450 (2024)"),
+    ("首都", "東京は日本の首都です。"),
+    ("Employees: approx. 450", "Employees:   Approx. 450 (2024)"),
+    ("café est ouvert", "Le café est ouvert"),  # decomposed é, NFKC-equal
+    ("pages 10–20", "see pages 10-20"),
 ])
-def test_any_script_and_spacing(quote, text):
-    assert quote_in(quote.strip("“”"), text)
+def test_matches_that_must_pass(quote, text):
+    assert quote_in(quote, text)
 
 
-def test_ellipsis_fragments_must_all_appear_in_order():
+@pytest.mark.parametrize("quote, text", [
+    ("Revenue rose 4%", "Revenue rose 40%."),
+    ("revenue reached 50", "The revenue reached 500 million."),
+    ("legal activity", "illegal activity"),
+    ("Net change was +10%", "Net change was -10%"),
+    ("Net change was 10%", "Net change was -10%"),
+    ("दिन", "दीन"),
+    ("দিন", "দান"),
+])
+def test_matches_that_must_fail(quote, text):
+    assert not quote_in(quote, text)
+
+
+@pytest.mark.parametrize("quote, found", [
+    ("cut taxes for families … balance the budget", True),
+    ("cut taxes for families [...] balance the budget", True),
+    ("We … balance", True),                        # all-short fragments still match
+    ("not … balance the budget", False),           # a short negation is never dropped
+    ("balance the budget ... cut taxes for families", False),  # order matters
+    ("cut taxes for families ... raise the minimum wage", False),
+])
+def test_ellipsis_fragments(quote, found):
     text = "We will cut taxes for families. Later, we will balance the budget."
-    assert quote_in("cut taxes for families … balance the budget", text)
-    assert quote_in("cut taxes for families [...] balance the budget", text)
-    assert not quote_in("balance the budget ... cut taxes for families", text)
-    assert not quote_in("cut taxes for families ... raise the minimum wage", text)
+    assert quote_in(quote, text) is found
 
 
-def test_empty_quote_or_text_raises():
+def test_empty_quote_or_text_raises(tmp_path):
     with pytest.raises(ValueError):
         quote_in(" ... ", "some page text")
     with pytest.raises(EmptySourceError):
-        quote_in("anything at all here", "  \n ")
+        quote_in("anything", "  \n ")
+    for quote in ("", "   ", "“ … ”"):
+        for source in ("missing.txt", "https://example.org/x"):
+            with pytest.raises(ValueError):
+                check_quote(Citation(source, quote), root=tmp_path)
 
 
 def test_local_text_file(tmp_path):
@@ -61,6 +95,34 @@ def test_local_text_file(tmp_path):
         is Status.NOT_FOUND
     assert check_quote(Citation("gone.txt", "bridge opened in 1932"), root=tmp_path).status \
         is Status.NOT_CHECKED
+
+
+@pytest.mark.parametrize("name, data", [
+    ("utf16.txt", codecs.BOM_UTF16_LE + "Le café est ouvert".encode("utf-16-le")),
+    ("bom.txt", codecs.BOM_UTF8 + "Le café est ouvert".encode()),
+    ("page.HTML", b'<meta charset="windows-1252"><p>Le caf\xe9 est ouvert</p>'),
+])
+def test_declared_encodings(tmp_path, name, data):
+    (tmp_path / name).write_bytes(data)
+    assert check_quote(Citation(name, "café est ouvert"), root=tmp_path).status \
+        is Status.SUPPORTED
+
+
+def test_undecodable_bytes_raise(tmp_path):
+    (tmp_path / "bad.txt").write_bytes(b"Le caf\xe9 est ouvert")
+    with pytest.raises(ValueError):
+        check_quote(Citation("bad.txt", "est ouvert"), root=tmp_path)
+
+
+def test_html_hides_comments_attributes_and_scripts(tmp_path):
+    (tmp_path / "p.html").write_text(
+        '<p title="a > b secret attribute words">Shown text.</p>'
+        "<!-- <p>commented out words</p> --><script>var s = 'script words';</script>"
+        "<p><b>Un</b>employment rose</p>")
+    for hidden in ("secret attribute words", "commented out words", "script words"):
+        assert check_quote(Citation("p.html", hidden), root=tmp_path).status is Status.NOT_FOUND
+    for shown in ("shown text", "unemployment rose"):
+        assert check_quote(Citation("p.html", shown), root=tmp_path).status is Status.SUPPORTED
 
 
 def test_local_pdf_by_page(tmp_path):
@@ -86,13 +148,10 @@ def test_path_outside_root_raises(tmp_path):
         check_quote(Citation("../secret.txt", "anything here at all"), root=tmp_path)
 
 
-def test_no_quote_is_not_checked(tmp_path):
-    assert check_quote(Citation("a.txt"), root=tmp_path).status is Status.NOT_CHECKED
-
-
 def test_offline_by_default(no_network):
-    result = check_quote(Citation("https://example.org/x", "words that would be checked"))
-    assert result.status is Status.NOT_CHECKED and "offline" in result.reason
+    for url in ("https://example.org/x", "HTTPS://example.org/x"):
+        result = check_quote(Citation(url, "words that would be checked"))
+        assert result.status is Status.NOT_CHECKED and "offline" in result.reason
 
 
 def test_network_without_fetcher_raises():
@@ -108,13 +167,18 @@ def test_web_page_and_pdf(server):
     assert check_quote(hidden, network=True, fetcher=fetcher()).status is Status.NOT_FOUND
     pdf = Citation(f"{server}/doc.pdf", "revenue rose sharply", page=2)
     assert check_quote(pdf, network=True, fetcher=fetcher()).status is Status.SUPPORTED
+    latin1 = Citation(f"{server}/cp1252", "café est ouvert")
+    assert check_quote(latin1, network=True, fetcher=fetcher()).status is Status.SUPPORTED
 
 
 @pytest.mark.parametrize("path, status", [
     ("/forbidden", Status.BLOCKED), ("/limited", Status.BLOCKED),
     ("/gone", Status.NOT_CHECKED), ("/broken", Status.NOT_CHECKED),
+    ("/partial", Status.NOT_CHECKED),   # 206: not the whole source
+    ("/short", Status.NOT_CHECKED),     # body ends before Content-Length
+    ("/huge", Status.NOT_CHECKED),      # over the size limit, quote at the end
 ])
-def test_web_refusals_are_never_not_found(server, path, status):
+def test_unread_sources_are_never_not_found(server, path, status):
     cite = Citation(f"{server}{path}", "words that would be checked")
     assert check_quote(cite, network=True, fetcher=fetcher()).status is status
 
