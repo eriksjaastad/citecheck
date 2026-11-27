@@ -114,3 +114,15 @@ def test_csv_is_read_by_cell(tmp_path):
     assert check_drift(c, root=tmp_path).status is Drift.HASH
     assert check_drift(Citation("rows.csv", "-24.99", sha256=c.sha256), root=tmp_path).status \
         is Drift.QUOTE
+
+
+@pytest.mark.parametrize("sign", ["-", "–", "—", "−"])
+def test_dropping_a_trailing_negative_is_quote_drift(tmp_path, sign):
+    c = cite(tmp_path, f"Amount: 24.99{sign} due\n".encode(), f"Amount: 24.99{sign}")
+    (tmp_path / "note.txt").write_bytes(b"Amount: 24.99 due\n")
+    assert check_drift(c, root=tmp_path).status is Drift.QUOTE
+
+
+def test_prose_dash_after_a_number_keeps_both_halves_quotable(tmp_path):
+    c = cite(tmp_path, "Employment reached 450—double last year.".encode(), "double last year")
+    assert check_drift(c, root=tmp_path).status is Drift.UNCHANGED

@@ -71,9 +71,12 @@ default). The checker is any command: it reads the rows on stdin and prints one
 python -m citecheck.regress key.jsonl --out run.jsonl --cwd ../grader -- uv run grade.py
 ```
 
-It exits 1 when any row got worse or was not graded. A row the checker skips is
-`missing`, never right. An empty key, an empty checker output, or an id the key does
-not have all raise.
+It exits 1 when any row got worse or was not graded. A row the checker skips, or grades
+`""`, `unknown`, `omitted` or `⚪`, is `missing`, never right; the same markers as an
+earlier grade make the row `new`. The key is checked before the checker runs; the
+checker gets 600 seconds (`--timeout`) and is stopped with everything it started. An
+empty key, an empty checker output, an id the key does not have, or a malformed
+baseline raises.
 
 ## Develop
 
