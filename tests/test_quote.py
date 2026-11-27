@@ -45,7 +45,7 @@ AMOUNT = st.one_of(
               st.sampled_from(["", ".5", ".00", ".25"])),
     st.builds(lambda cur, cents: f"{cur}.{cents}", st.sampled_from(["$", "€"]),
               st.sampled_from(["5", "50", "05"])))
-SIGNED = st.sampled_from(["-{}", "−{}", "- {}", "{}-", "({})", "( {} )"])
+SIGNED = st.sampled_from(["-{}", "−{}", "- {}", "{}-", "{}–", "{}—", "{}−", "({})", "( {} )"])
 
 
 @given(AMOUNT, SIGNED)
@@ -106,6 +106,10 @@ def test_no_piece_of_a_formatted_number_is_found(number, data):
     ("double last year", "Employment reached 450—double last year."),
     ("in 2024 sales fell", "in 2024–sales fell"),
     ("rose 4.5 then", "rose 4.5—then"),
+    ("a 20-year study", "a 20‑year study"),         # U+2011 non-breaking hyphen
+    ("a 20-year study", "a 20‐year study"),         # U+2010 hyphen
+    ("IL-2-dependent", "IL-2‐dependent"),
+    ("Amount: 24.99–", "Amount: 24.99– due"),
     ("between 10 20", "between 10 – 20"),        # spaced dash between integers: a range
     ("a 20 year study", "a 20–year study"),       # an en dash before a word is punctuation
     ("Rate: 3,5%", "Rate: 3,5%"),
@@ -157,7 +161,12 @@ def test_matches_that_must_pass(quote, text):
     ("pages 10 20", "pages 10—20"),
     ("24.99", "24.99-\n100.00"),
     ("450", "it was 450–500 people"),             # an en dash between amounts is a range
-    ("$10", "between $10—$20"),                # a trailing negative before the next cell
+    ("$10", "between $10—$20"),
+    ("24.99", "Amount: 24.99– due"),             # a typeset trailing negative
+    ("24.99", "Amount: 24.99—"),
+    ("Observed 10", "Observed 10–\n20 participants"),
+    ("-10", "range −10–−5"),
+    ("IL-2 dependent", "IL-2‐dependent"),                # a trailing negative before the next cell
     ("$24.99", "$100.00 -$24.99"),              # a negative cell after another value
     ("$24.99", "$100.00 - $24.99"),
     ("$24.99", "$100.00\u00a0-\u00a0$24.99"),

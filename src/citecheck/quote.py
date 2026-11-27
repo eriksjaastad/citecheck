@@ -28,7 +28,8 @@ from .status import Status
 _ELLIPSIS = re.compile(r"\s*(?:\[\s*(?:…|\.\.\.)\s*\]|…|\.\.\.)\s*")
 _CONTENT_CHARSET = re.compile(r"charset\s*=\s*[\"']?([A-Za-z0-9_.:-]+)", re.IGNORECASE)
 _SIGNS = frozenset("+±−")  # plus every Pd dash
-_SPACED_SIGNS = frozenset("-+±−")  # still a sign with spaces before the number
+_SPACED_SIGNS = frozenset("-+±−")
+_PROSE_DASHES = frozenset("–—―")  # en, em, horizontal bar: before a letter, punctuation  # still a sign with spaces before the number
 # Scripts written without spaces between words: any character there is a boundary.
 _UNSEGMENTED = ("CJK", "HIRAGANA", "KATAKANA", "HALFWIDTH KATAKANA", "IDEOGRAPHIC",
                 "THAI", "LAO", "KHMER", "MYANMAR")
@@ -62,9 +63,9 @@ def normalize(text: str) -> str:
 
     Where a mark might belong to a number, it stays on it, so a quote that drops it
     is NOT_FOUND rather than falsely found:
-    - a hyphen or minus touching a digit before it stays ("24.99-", "2025-01-15",
-      "20-year"); an en or em dash there stays only before another amount ("10–20"),
-      since before a word it is prose punctuation ("450—double" is "450 double");
+    - a dash touching a digit before it stays ("10–20", "24.99–", "2025-01-15",
+      "20‑year"), except an en or em dash with a letter right after it, which is
+      prose punctuation ("450—double" is "450 double");
     - a sign touching a number or amount after it stays ("-5", "-$24.99", "COVID-19",
       and "100.00 -24.99", two values, not a range), every dash or minus written "-";
       "-", "+", "±" and "−" stay with spaces before the number too ("- 10%" is "-10%"),
@@ -105,7 +106,8 @@ def normalize(text: str) -> str:
             gap = True
             emit(ch)
             close_at = close
-        elif dash and touching_number and (ch in _SPACED_SIGNS or _amount_at(text, i + 1)):
+        elif dash and touching_number and not (ch in _PROSE_DASHES and i + 1 < n
+                                               and unicodedata.category(text[i + 1])[0] == "L"):
             out.append(ch if ch in "+±" else "-")
         elif dash and (j := _signed(text, i)) is not None:
             emit(ch if ch in "+±" else "-")
