@@ -1,6 +1,6 @@
 [project]
 name = "citecheck"
-version = "0.1.1"
+version = "0.1.2"
 description = "Mechanical checks that a claim matches its cited source: the quote is there, the link is live."
 readme = "README.md"
 license = "MIT"

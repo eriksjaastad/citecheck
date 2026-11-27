@@ -37,6 +37,7 @@ class Response:
     content_type: str
     charset: str | None
     body: bytes
+    headers_only: bool = False  # body deliberately not read (a link check)
 
 
 def _require_http(url: str) -> None:
@@ -91,9 +92,15 @@ class Fetcher:
 
     It has no public fetch method: requests go out only through a check called with
     ``network=True``.
+
+    ``cache=True`` fetches each URL once for this Fetcher's life, so many quotes checked
+    against one page cost one request. It stores the answer as it came: an HTTP error
+    code stays that code, and a failed fetch raises the same FetchError again. Off by
+    default, so nothing is reused unless the caller asks; make a new Fetcher per run.
     """
 
-    def __init__(self, user_agent: str, *, timeout: float = 20, min_interval: float = 1.0):
+    def __init__(self, user_agent: str, *, timeout: float = 20, min_interval: float = 1.0,
+                 cache: bool = False):
         if not user_agent or not user_agent.strip():
             raise ConfigError("a user agent is required for network checks")
         self.user_agent = user_agent
@@ -101,6 +108,7 @@ class Fetcher:
         self.min_interval = min_interval
         self._last: dict[str, float] = {}
         self._opener = urllib.request.build_opener(_HttpOnlyRedirects, _Spacing(self._wait))
+        self._cache: dict[str, Response | FetchError] | None = {} if cache else None
 
     def _wait(self, host: str) -> None:
         last = self._last.get(host)
@@ -112,6 +120,22 @@ class Fetcher:
 
     def _get(self, url: str, *, read_body: bool = True) -> Response:
         """The HTTP answer, error codes included. Raises FetchError without a whole one."""
+        if self._cache is None:
+            return self._request(url, read_body)
+        key = to_uri(url)
+        hit = self._cache.get(key)
+        # A header-only answer (link check) can't serve a later request for the body.
+        if hit is None or (read_body and isinstance(hit, Response) and hit.headers_only):
+            try:
+                hit = self._request(url, read_body)
+            except FetchError as exc:
+                hit = exc
+            self._cache[key] = hit
+        if isinstance(hit, FetchError):
+            raise hit
+        return hit
+
+    def _request(self, url: str, read_body: bool) -> Response:
         req = urllib.request.Request(to_uri(url), headers={"User-Agent": self.user_agent})
         try:
             with self._opener.open(req, timeout=self.timeout) as resp:
@@ -122,7 +146,8 @@ class Fetcher:
                 if read_body and declared.isdigit() and len(body) < int(declared):
                     raise FetchError(f"{url}: body ended at {len(body)} of {declared} bytes")
                 return Response(resp.geturl(), resp.status, resp.headers.get_content_type(),
-                                resp.headers.get_content_charset(), body)
+                                resp.headers.get_content_charset(), body,
+                                headers_only=not read_body)
         except urllib.error.HTTPError as exc:
             with exc:
                 return Response(exc.geturl() or url, exc.code, exc.headers.get_content_type(),
