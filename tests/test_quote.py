@@ -102,7 +102,7 @@ def test_no_piece_of_a_formatted_number_is_found(number, data):
     ("cost $1,234,567.89", "cost $1,234,567.89"),
     ("rate .5%", "rate .5%"),
     ("pages 10-20", "pages 10—20"),
-    ("between $10 $20", "between $10 – $20"),    # spaced: a range
+    ("between 10 20", "between 10 – 20"),        # spaced dash between integers: a range
     ("a 20-year study", "a 20–year study"),
     ("Rate: 3,5%", "Rate: 3,5%"),
     ("cost ₹1,00,000", "cost ₹1,00,000"),
@@ -156,6 +156,10 @@ def test_matches_that_must_pass(quote, text):
     ("$24.99", "$100.00 - $24.99"),
     ("$24.99", "$100.00\u00a0-\u00a0$24.99"),
     ("24.99", "100.00 + 24.99"),
+    ("$24.99", "$100.00 – $24.99"),             # a spaced en dash before money: a minus
+    ("5.00", "total — 5.00"),
+    ("$24.99", "$100.00 ± $24.99"),
+    ("between $10 $20", "between $10 – $20"),
     ("pages 10 20", "pages 10 - 20"),
     ("refund 100.00", "refund -$ 100.00"),
     ("refund $.50", "refund ($.50)"),

@@ -64,7 +64,8 @@ def normalize(text: str) -> str:
       "-", "+", "±" and "−" stay with spaces before the number too ("- 10%" is "-10%"),
       even right after another number: "$100.00 - $24.99" may be two cells, so
       "10 - 20" is "10 -20" and a quote must keep the dash. A spaced en or em dash is
-      a separator ("10 – 20" is "10 20");
+      a sign only before money ("– $24.99", "— 5.00"), else a separator ("10 – 20"
+      is "10 20");
     - parentheses around an amount (a currency symbol, a leading point, two decimals
       or a thousands comma) stay on it, spaces inside dropped: "( $ 1 234.56 )" is
       "($1234.56)". Parentheses around other numbers, "(2024)", are spacing.
@@ -74,15 +75,14 @@ def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", text).casefold()
     out: list[str] = []
     gap = False        # punctuation or space skipped since the last kept character
-    punct_gap = False  # ...and some of it was not space
     close_at = -1      # index of the ")" closing an amount in parentheses
 
     def emit(ch: str) -> None:
-        nonlocal gap, punct_gap
+        nonlocal gap
         if gap and out:
             out.append(" ")
         out.append(ch)
-        gap = punct_gap = False
+        gap = False
 
     i, n = 0, len(text)
     while i < n:
@@ -117,7 +117,6 @@ def normalize(text: str) -> str:
             emit(ch)
         else:
             gap = True
-            punct_gap = punct_gap or not ch.isspace()
         i += 1
     return "".join(out)
 
@@ -144,12 +143,32 @@ def _skip_spaces(text: str, j: int) -> int:
 
 
 def _signed(text: str, i: int) -> int | None:
-    """Where the amount after the sign at ``i`` starts, or None if no amount follows."""
-    j = _skip_spaces(text, i + 1) if text[i] in _SPACED_SIGNS else i + 1
-    k = j
-    if k < len(text) and unicodedata.category(text[k]) == "Sc":
-        k = _skip_spaces(text, k + 1)
-    return j if _number_at(text, k) else None
+    """Where the amount after the sign at ``i`` starts, or None if no amount follows.
+
+    "-", "+", "±" and "−" may have spaces before the number. A spaced en or em dash is
+    a sign only before money (a currency symbol, or a number with a decimal point):
+    "– $24.99" is a typeset minus, "10 – 20" a range.
+    """
+    j = _skip_spaces(text, i + 1)
+    if j > i + 1 and text[i] not in _SPACED_SIGNS and not _money_at(text, j):
+        return None
+    return j if _amount_at(text, j) else None
+
+
+def _amount_at(text: str, j: int) -> bool:
+    """A number starts at ``j``, or a currency symbol and then one."""
+    if j < len(text) and unicodedata.category(text[j]) == "Sc":
+        j = _skip_spaces(text, j + 1)
+    return _number_at(text, j)
+
+
+def _money_at(text: str, j: int) -> bool:
+    """An amount at ``j`` that reads as money: a currency symbol, or a decimal point."""
+    if j < len(text) and unicodedata.category(text[j]) == "Sc":
+        return _amount_at(text, j)
+    while _digit_at(text, j) or (text[j:j + 1] == "," and _digit_at(text, j + 1)):
+        j += 1
+    return text[j:j + 1] == "." and _digit_at(text, j + 1)
 
 
 def _amount_close(text: str, i: int) -> int | None:
