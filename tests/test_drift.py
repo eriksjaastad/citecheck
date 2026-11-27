@@ -105,3 +105,12 @@ def test_url(server, path, drift):
     c = Citation(f"{server}{path}", "voted seven to two", sha256=sha(body))
     f = Fetcher("citecheck-tests/0", min_interval=0)
     assert check_drift(c, network=True, fetcher=f).status is drift
+
+
+def test_csv_is_read_by_cell(tmp_path):
+    c = cite(tmp_path, b"REI 7084,2025-01-15,-24.99\n", "REI 7084", "rows.csv")
+    assert check_drift(c, root=tmp_path).status is Drift.UNCHANGED
+    (tmp_path / "rows.csv").write_bytes(b"REI 7084,2025-01-15,24.99\n")
+    assert check_drift(c, root=tmp_path).status is Drift.HASH
+    assert check_drift(Citation("rows.csv", "-24.99", sha256=c.sha256), root=tmp_path).status \
+        is Drift.QUOTE

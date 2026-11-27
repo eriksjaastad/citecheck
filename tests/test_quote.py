@@ -39,6 +39,44 @@ def test_part_of_a_word_or_number_is_never_found(word, extra, before):
     assert not quote_in(f"said {word} today", f"He said {longer} today.")
 
 
+AMOUNT = st.one_of(
+    st.builds(lambda cur, whole, cents: f"{cur}{whole:,}{cents}",
+              st.sampled_from(["", "$", "€"]), st.integers(0, 10**7),
+              st.sampled_from(["", ".5", ".00", ".25"])),
+    st.builds(lambda cur, cents: f"{cur}.{cents}", st.sampled_from(["$", "€"]),
+              st.sampled_from(["5", "50", "05"])))
+SIGNED = st.sampled_from(["-{}", "−{}", "- {}", "{}-", "({})", "( {} )"])
+
+
+@given(AMOUNT, SIGNED)
+def test_a_signed_amount_never_matches_its_unsigned_form(amount, form):
+    signed = form.format(amount)
+    if form.startswith("(") and not (amount[0] in "$€" or "," in amount
+                                     or amount.endswith((".00", ".25"))):
+        signed = "-" + amount  # parentheses mark only amounts as negative
+    assert quote_in(f"paid {signed} on", f"Paid {signed} on")
+    assert not quote_in(f"paid {amount} on", f"Paid {signed} on")
+    assert not quote_in(f"paid {signed} on", f"Paid {amount} on")
+
+
+NUMBER = st.builds(lambda head, seps: head + "".join(seps),
+                   st.text("123456789", min_size=1, max_size=3),
+                   st.lists(st.builds(lambda s, d: s + d, st.sampled_from([",", "."]),
+                                      st.text("0123456789", min_size=1, max_size=3)),
+                            min_size=1, max_size=3))
+
+
+@given(NUMBER, st.data())
+def test_no_piece_of_a_formatted_number_is_found(number, data):
+    """Western, European, Indian grouping and decimal commas: only the whole is found."""
+    cuts = [i for i, c in enumerate(number) if c in ".,"]
+    cut = data.draw(st.sampled_from(cuts))
+    text = f"total {number}% today"
+    assert quote_in(f"total {number}%", text)
+    assert not quote_in(f"total {number[:cut]}", text)
+    assert not quote_in(f"{number[cut + 1:]}% today", text)
+
+
 @pytest.mark.parametrize("quote, text", [
     ("Москва не сразу строилась", "Говорят, Москва не сразу строилась."),
     ("東京は日本の首都です", "東京は日本の首都です。人口は多い。"),
@@ -54,8 +92,24 @@ def test_part_of_a_word_or_number_is_never_found(word, extra, before):
     ("the score 10 points", "the score — 10 points"),
     ("Values were 10, -5, and 3", "Values were 10, -5, and 3"),
     ("-5", "Values were 10, -5, and 3"),
-    ("pages 10 20", "pages 10 - 20"),
-    ("pages 10 20", "pages 10—20"),
+    ("pages 10 - 20", "pages 10 -20"),
+    ("pages 10 20", "pages 10 – 20"),
+    ("Amount: -$24.99", "Amount: - $24.99"),
+    ("refund ($ 100.00)", "refund ( $100.00 )"),
+    ("refund (100.00)", "refund (100.00)"),
+    ("Smith 2024", "Smith (2024)"),             # parentheses around a non-amount are spacing
+    ("rose 12.5% this year", "rose (12.5%) this year"),
+    ("cost $1,234,567.89", "cost $1,234,567.89"),
+    ("rate .5%", "rate .5%"),
+    ("pages 10-20", "pages 10—20"),
+    ("between 10 20", "between 10 – 20"),        # spaced dash between integers: a range
+    ("a 20-year study", "a 20–year study"),
+    ("Rate: 3,5%", "Rate: 3,5%"),
+    ("cost ₹1,00,000", "cost ₹1,00,000"),
+    ("Total", "Total($100.00)"),
+    ("($100.00)", "Total($100.00)"),
+    ("refund -$100.00", "refund -$ 100.00"),
+    ("refund (€1 234.56)", "refund ( €1 234.56 )"),
 ])
 def test_matches_that_must_pass(quote, text):
     assert quote_in(quote, text)
@@ -74,6 +128,44 @@ def test_matches_that_must_pass(quote, text):
     ("Values were 10, 5, and 3", "Values were 10, -5, and 3"),
     ("rose 10 and 5%", "rose 10 and -5%"),
     ("temps 10, 5", "temps 10, −5"),
+    ("Amount: -$24.99", "Amount: $24.99"),     # a quote's sign is never dropped
+    ("Amount: $24.99", "Amount: -$24.99"),
+    ("Amount: $24.99", "Amount: - $24.99"),
+    ("Amount: 24.99", "Amount: 24.99-"),        # trailing negative
+    ("Amount: 24.99-", "Amount: 24.99"),
+    ("refund ($ 100.00)", "refund $ 100.00"),   # accounting negative
+    ("refund (100.00)", "refund 100.00"),
+    ("refund $100.00", "refund ($100.00)"),
+    ("refund 1,234.56", "refund (1,234.56)"),
+    ("rate .5%", "rate 5%"),
+    ("rate 5%", "rate .5%"),
+    ("change -.5", "change .5"),
+    ("total 1,234", "total 1,234,567"),
+    ("total 1", "total 1,234"),
+    ("5%", "Rate: 3,5%"),                       # decimal commas and Indian grouping
+    ("rate 3", "rate 3,5%"),
+    ("50%", "rose 12,50%"),
+    ("paid 24", "paid 24,99 EUR"),
+    ("cost ₹1", "cost ₹1,00,000"),
+    ("REI 7084", "REI 7084,2025-01-15"),        # in plain text, one token; see the CSV test
+    ("between $10 $20", "between $10-$20"),     # unspaced: kept, a quote must keep it
+    ("a 20 year study", "a 20-year study"),
+    ("pages 10 20", "pages 10—20"),
+    ("24.99", "24.99-\n100.00"),                # a trailing negative before the next cell
+    ("$24.99", "$100.00 -$24.99"),              # a negative cell after another value
+    ("$24.99", "$100.00 - $24.99"),
+    ("$24.99", "$100.00\u00a0-\u00a0$24.99"),
+    ("24.99", "100.00 + 24.99"),
+    ("$24.99", "$100.00 – $24.99"),             # a spaced en dash before money: a minus
+    ("5.00", "total — 5.00"),
+    ("$24.99", "$100.00 ± $24.99"),
+    ("between $10 $20", "between $10 – $20"),
+    ("pages 10 20", "pages 10 - 20"),
+    ("refund 100.00", "refund -$ 100.00"),
+    ("refund $.50", "refund ($.50)"),
+    ("refund 100.00 €", "refund (100.00 €)"),
+    ("refund €1 234.56", "refund (€1 234.56)"),
+    ("refund 1 234.56", "refund (€1 234.56)"),
     ("दिन", "दीन"),
     ("দিন", "দান"),
 ])
@@ -103,6 +195,26 @@ def test_empty_quote_or_text_raises(tmp_path):
         for source in ("missing.txt", "https://example.org/x"):
             with pytest.raises(ValueError):
                 check_quote(Citation(source, quote), root=tmp_path)
+
+
+def test_csv_is_read_cell_by_cell(tmp_path):
+    (tmp_path / "rows.csv").write_text('REI 7084,2025-01-15,-24.99\n"Acme, Inc",3,5\n$100.00,- $24.99\n')
+    for quote, status in (("REI 7084", Status.SUPPORTED), ("2025-01-15", Status.SUPPORTED),
+                          ("-24.99", Status.SUPPORTED), ("24.99", Status.NOT_FOUND),
+                          ("Acme, Inc", Status.SUPPORTED), ("3 5", Status.SUPPORTED),
+                          ("7084,2025", Status.NOT_FOUND), ("- $24.99", Status.SUPPORTED),
+                          ("$100.00 $24.99", Status.NOT_FOUND)):
+        assert check_quote(Citation("rows.csv", quote), root=tmp_path).status is status, quote
+
+
+def test_html_table_cells_keep_their_signs(tmp_path):
+    (tmp_path / "t.html").write_text(
+        "<table><tr><td>$100.00</td><td>-$24.99</td><td>- $5.00</td></tr>"
+        "<tr><td>24.99-</td><td>100.00</td></tr></table>")
+    for quote, status in (("-$24.99", Status.SUPPORTED), ("$24.99", Status.NOT_FOUND),
+                          ("24.99-", Status.SUPPORTED), ("24.99 100.00", Status.NOT_FOUND),
+                          ("-$5.00", Status.SUPPORTED), ("$5.00", Status.NOT_FOUND)):
+        assert check_quote(Citation("t.html", quote), root=tmp_path).status is status, quote
 
 
 def test_local_text_file(tmp_path):

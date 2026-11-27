@@ -51,7 +51,8 @@ def check_drift(citation: Citation, *, root: str | Path = ".", network: bool = F
         return DriftResult(Drift.MISSING if src.gone else Drift.NOT_CHECKED, src.reason)
     if normalize(citation.quote):
         try:
-            text = _decode(src.data, citation.page, is_html=src.is_html, charset=src.charset)
+            text = _decode(src.data, citation.page, is_html=src.is_html, charset=src.charset,
+                           is_csv=src.is_csv)
         except PageMissingError as exc:
             return DriftResult(Drift.QUOTE, str(exc))
         if not normalize(text):
