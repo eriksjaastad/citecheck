@@ -13,6 +13,8 @@ and nothing leaves the machine unless you ask for it on that call.
   from `NOT_FOUND` (404, 410).
 - **DOI check:** does the DOI exist, and what title and journal does its record give?
   Crossref, then DataCite (arXiv, Zenodo), then the DOI registry itself.
+- **Regression runner:** re-run a labelled answer key through any checker command and
+  report each row as better, worse, same, new or missing. No single score.
 - **Drift check:** has a cited file changed since it was cited? A moved hash (`HASH`)
   is kept apart from a lost quote or page (`QUOTE`) and a missing file (`MISSING`).
 
@@ -21,7 +23,7 @@ and nothing leaves the machine unless you ask for it on that call.
 Pin a tag:
 
 ```
-uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.2.0"
+uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.3.0"
 ```
 
 ## Use
@@ -57,6 +59,21 @@ a title to compare. A drift check raises on a source with no text, like a quote 
 that loads but yields no text raises `EmptySourceError` rather than calling the quote
 missing. A quote against a source that refused us is `BLOCKED`, against one that is
 gone or unreachable `NOT_CHECKED`, never `NOT_FOUND`.
+
+## Regression runner
+
+An answer key is JSON Lines with an `id` and the right label per row (`final_grade` by
+default). The checker is any command: it reads the rows on stdin and prints one
+`{"id": ..., "grade": ...}` per line. Each row is compared with its earlier grade
+(`first_grade`, or an earlier run's `--out` file given as `--baseline`):
+
+```
+python -m citecheck.regress key.jsonl --out run.jsonl --cwd ../grader -- uv run grade.py
+```
+
+It exits 1 when any row got worse or was not graded. A row the checker skips is
+`missing`, never right. An empty key, an empty checker output, or an id the key does
+not have all raise.
 
 ## Develop
 
