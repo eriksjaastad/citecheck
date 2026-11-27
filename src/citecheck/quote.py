@@ -62,7 +62,9 @@ def normalize(text: str) -> str:
     - a sign touching a number or amount after it stays ("-5", "-$24.99", "COVID-19",
       and "100.00 -24.99", two values, not a range), every dash or minus written "-";
       "-", "+", "±" and "−" stay with spaces before the number too ("- 10%" is "-10%"),
-      except right after a number ("10 - 20" is "10 20");
+      even right after another number: "$100.00 - $24.99" may be two cells, so
+      "10 - 20" is "10 -20" and a quote must keep the dash. A spaced en or em dash is
+      a separator ("10 – 20" is "10 20");
     - parentheses around an amount (a currency symbol, a leading point, two decimals
       or a thousands comma) stay on it, spaces inside dropped: "( $ 1 234.56 )" is
       "($1234.56)". Parentheses around other numbers, "(2024)", are spacing.
@@ -87,7 +89,6 @@ def normalize(text: str) -> str:
         ch = text[i]
         cat = unicodedata.category(ch)
         touching_number = bool(out) and out[-1].isdigit() and not gap
-        after_number = bool(out) and out[-1].isdigit() and not punct_gap
         dash = cat == "Pd" or ch in _SIGNS
         if i == close_at:
             out.append(ch)
@@ -100,7 +101,7 @@ def normalize(text: str) -> str:
             close_at = close
         elif dash and touching_number:
             out.append(ch if ch in "+±" else "-")
-        elif dash and (j := _signed(text, i)) is not None and (j == i + 1 or not after_number):
+        elif dash and (j := _signed(text, i)) is not None:
             emit(ch if ch in "+±" else "-")
             i = j
             continue

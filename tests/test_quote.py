@@ -92,7 +92,8 @@ def test_no_piece_of_a_formatted_number_is_found(number, data):
     ("the score 10 points", "the score — 10 points"),
     ("Values were 10, -5, and 3", "Values were 10, -5, and 3"),
     ("-5", "Values were 10, -5, and 3"),
-    ("pages 10 20", "pages 10 - 20"),
+    ("pages 10 - 20", "pages 10 -20"),
+    ("pages 10 20", "pages 10 – 20"),
     ("Amount: -$24.99", "Amount: - $24.99"),
     ("refund ($ 100.00)", "refund ( $100.00 )"),
     ("refund (100.00)", "refund (100.00)"),
@@ -152,6 +153,10 @@ def test_matches_that_must_pass(quote, text):
     ("pages 10 20", "pages 10—20"),
     ("24.99", "24.99-\n100.00"),                # a trailing negative before the next cell
     ("$24.99", "$100.00 -$24.99"),              # a negative cell after another value
+    ("$24.99", "$100.00 - $24.99"),
+    ("$24.99", "$100.00\u00a0-\u00a0$24.99"),
+    ("24.99", "100.00 + 24.99"),
+    ("pages 10 20", "pages 10 - 20"),
     ("refund 100.00", "refund -$ 100.00"),
     ("refund $.50", "refund ($.50)"),
     ("refund 100.00 €", "refund (100.00 €)"),
@@ -189,19 +194,22 @@ def test_empty_quote_or_text_raises(tmp_path):
 
 
 def test_csv_is_read_cell_by_cell(tmp_path):
-    (tmp_path / "rows.csv").write_text('REI 7084,2025-01-15,-24.99\n"Acme, Inc",3,5\n')
+    (tmp_path / "rows.csv").write_text('REI 7084,2025-01-15,-24.99\n"Acme, Inc",3,5\n$100.00,- $24.99\n')
     for quote, status in (("REI 7084", Status.SUPPORTED), ("2025-01-15", Status.SUPPORTED),
                           ("-24.99", Status.SUPPORTED), ("24.99", Status.NOT_FOUND),
                           ("Acme, Inc", Status.SUPPORTED), ("3 5", Status.SUPPORTED),
-                          ("7084,2025", Status.NOT_FOUND)):
+                          ("7084,2025", Status.NOT_FOUND), ("- $24.99", Status.SUPPORTED),
+                          ("$100.00 $24.99", Status.NOT_FOUND)):
         assert check_quote(Citation("rows.csv", quote), root=tmp_path).status is status, quote
 
 
 def test_html_table_cells_keep_their_signs(tmp_path):
     (tmp_path / "t.html").write_text(
-        "<table><tr><td>$100.00</td><td>-$24.99</td></tr><tr><td>24.99-</td><td>100.00</td></tr></table>")
+        "<table><tr><td>$100.00</td><td>-$24.99</td><td>- $5.00</td></tr>"
+        "<tr><td>24.99-</td><td>100.00</td></tr></table>")
     for quote, status in (("-$24.99", Status.SUPPORTED), ("$24.99", Status.NOT_FOUND),
-                          ("24.99-", Status.SUPPORTED), ("24.99 100.00", Status.NOT_FOUND)):
+                          ("24.99-", Status.SUPPORTED), ("24.99 100.00", Status.NOT_FOUND),
+                          ("-$5.00", Status.SUPPORTED), ("$5.00", Status.NOT_FOUND)):
         assert check_quote(Citation("t.html", quote), root=tmp_path).status is status, quote
 
 
