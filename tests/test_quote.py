@@ -45,6 +45,12 @@ def test_part_of_a_word_or_number_is_never_found(word, extra, before):
     ("Employees: approx. 450", "Employees:   Approx. 450 (2024)"),
     ("café est ouvert", "Le café est ouvert"),  # decomposed é, NFKC-equal
     ("pages 10–20", "see pages 10-20"),
+    ("Net change was -10%", "Net change was −10%."),
+    ("Net change was −10%", "Net change was - 10%."),
+    ("Revenue reached 50.5 million", "Revenue reached 50.5 million."),
+    ("Revenue reached 50,000 dollars", "Revenue reached 50,000 dollars."),
+    ("It cost 50", "It cost 50. Then it rose."),
+    ("the score 10 points", "the score — 10 points"),
 ])
 def test_matches_that_must_pass(quote, text):
     assert quote_in(quote, text)
@@ -56,6 +62,10 @@ def test_matches_that_must_pass(quote, text):
     ("legal activity", "illegal activity"),
     ("Net change was +10%", "Net change was -10%"),
     ("Net change was 10%", "Net change was -10%"),
+    ("Net change was 10%", "Net change was - 10%."),
+    ("Net change was 10%", "Net change was −10%."),
+    ("Revenue reached 50", "Revenue reached 50.5 million."),
+    ("Revenue reached 50", "Revenue reached 50,000 dollars."),
     ("दिन", "दीन"),
     ("দিন", "দান"),
 ])
@@ -101,6 +111,10 @@ def test_local_text_file(tmp_path):
     ("utf16.txt", codecs.BOM_UTF16_LE + "Le café est ouvert".encode("utf-16-le")),
     ("bom.txt", codecs.BOM_UTF8 + "Le café est ouvert".encode()),
     ("page.HTML", b'<meta charset="windows-1252"><p>Le caf\xe9 est ouvert</p>'),
+    ("equiv.html", (b'<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">'
+                    b"<p>Le caf\xe9 est ouvert</p>")),
+    ("inert.html", '<!-- <meta charset="windows-1252"> --><meta name="x" content="charset=latin1">'
+                   '<meta charset="utf-8"><p>Le café est ouvert</p>'.encode()),
 ])
 def test_declared_encodings(tmp_path, name, data):
     (tmp_path / name).write_bytes(data)

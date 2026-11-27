@@ -25,7 +25,9 @@ from .record import Citation
 from .status import Status
 
 _ELLIPSIS = re.compile(r"\s*(?:\[\s*(?:…|\.\.\.)\s*\]|…|\.\.\.)\s*")
-_META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?([A-Za-z0-9_.:-]+)""", re.IGNORECASE)
+_CONTENT_CHARSET = re.compile(r"charset\s*=\s*[\"']?([A-Za-z0-9_.:-]+)", re.IGNORECASE)
+_SIGNS = frozenset("+±−")  # plus every Pd dash
+_SPACED_SIGNS = frozenset("-+±−")  # still a sign with spaces before the number
 # Scripts written without spaces between words: any character there is a boundary.
 _UNSEGMENTED = ("CJK", "HIRAGANA", "KATAKANA", "HALFWIDTH KATAKANA", "IDEOGRAPHIC",
                 "THAI", "LAO", "KHMER", "MYANMAR")
@@ -48,24 +50,46 @@ class QuoteResult:
 def normalize(text: str) -> str:
     """NFKC-fold and casefold; punctuation and spacing collapse to single spaces.
 
-    Kept: letters with their combining marks (दिन is not दीन), digits, symbols
-    (+, $, °), percent, and a dash before a digit (as "-", so -10 is not 10).
+    Kept, because each can change a claim's meaning: letters with their combining
+    marks (दिन is not दीन); digits with the "." or "," inside a number (50 is not
+    50.5 or 50,000); symbols (+, $, °) and percent; and a sign before a number, joined
+    to it, with every dash or minus written "-" (so "- 10%" and "−10%" are "-10%";
+    an en or em dash counts as a sign only when it touches the digit).
+    A dash after a number is a range and becomes a space ("10–20" is "10 20").
     """
     text = unicodedata.normalize("NFKC", text).casefold()
     out: list[str] = []
     gap = False
-    for i, ch in enumerate(text):
+
+    def emit(ch: str) -> None:
+        nonlocal gap
+        if gap and out:
+            out.append(" ")
+        out.append(ch)
+        gap = False
+
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
         cat = unicodedata.category(ch)
-        nxt = text[i + 1] if i + 1 < len(text) else ""
-        if cat == "Pd" and nxt.isdigit():
-            ch, cat = "-", "Sm"
-        if cat[0] in "LMNS" or ch == "%":
-            if gap and out:
-                out.append(" ")
+        # A sign, unless it follows a number: "10-20" and "10 — 20" are ranges.
+        # A spaced en or em dash before a number is a separator ("the score — 10").
+        if (cat == "Pd" or ch in _SIGNS) and not (out and out[-1].isdigit()):
+            j = i + 1
+            while ch in _SPACED_SIGNS and j < n and text[j].isspace():
+                j += 1
+            if j < n and text[j].isdigit():
+                emit(ch if ch in "+±" else "-")
+                i = j
+                continue
+        if ch in ".," and out and out[-1].isdigit() and not gap and i + 1 < n \
+                and text[i + 1].isdigit():
             out.append(ch)
-            gap = False
+        elif cat[0] in "LMNS" or ch == "%":
+            emit(ch)
         else:
             gap = True
+        i += 1
     return "".join(out)
 
 
@@ -167,8 +191,32 @@ def _encoding(data: bytes, charset: str | None, is_html: bool) -> str:
         return "utf-16"
     if charset:
         return charset
-    match = _META_CHARSET.search(data[:4096]) if is_html else None
-    return match.group(1).decode("ascii") if match else "utf-8"
+    return (_meta_charset(data[:4096]) if is_html else None) or "utf-8"
+
+
+class _MetaCharset(HTMLParser):
+    """The first real <meta> encoding declaration; comments and other attributes ignored."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.charset: str | None = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "meta" or self.charset:
+            return
+        values = {k: (v or "") for k, v in attrs}
+        if values.get("charset", "").strip():
+            self.charset = values["charset"].strip()
+        elif values.get("http-equiv", "").lower() == "content-type":
+            match = _CONTENT_CHARSET.search(values.get("content", ""))
+            self.charset = match.group(1) if match else None
+
+
+def _meta_charset(head: bytes) -> str | None:
+    """Declared encoding in an HTML page's first bytes (read as ASCII, as browsers do)."""
+    parser = _MetaCharset()
+    parser.feed(head.decode("ascii", "replace"))
+    return parser.charset
 
 
 def _decode(data: bytes, page: int | None, *, is_html: bool, charset: str | None = None) -> str:
