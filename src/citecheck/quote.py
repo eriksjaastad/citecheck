@@ -55,26 +55,30 @@ def normalize(text: str) -> str:
     50.5 or 50,000); symbols (+, $, °) and percent; and a sign before a number, joined
     to it, with every dash or minus written "-" (so "- 10%" and "−10%" are "-10%";
     an en or em dash counts as a sign only when it touches the digit).
-    A dash after a number is a range and becomes a space ("10–20" is "10 20").
+    A dash right after a number, with only spaces between, is a range and becomes a
+    space ("10–20" and "10 - 20" are "10 20"); after other punctuation it is a sign
+    ("10, -5" keeps -5). Known cost, on the safe side: a spaced hyphen before a number
+    in prose ("Acme - 2024") reads as a sign, so a quote dropping it is NOT_FOUND.
     """
     text = unicodedata.normalize("NFKC", text).casefold()
     out: list[str] = []
-    gap = False
+    gap = False        # punctuation or space skipped since the last kept character
+    punct_gap = False  # ...and some of it was not space
 
     def emit(ch: str) -> None:
-        nonlocal gap
+        nonlocal gap, punct_gap
         if gap and out:
             out.append(" ")
         out.append(ch)
-        gap = False
+        gap = punct_gap = False
 
     i, n = 0, len(text)
     while i < n:
         ch = text[i]
         cat = unicodedata.category(ch)
-        # A sign, unless it follows a number: "10-20" and "10 — 20" are ranges.
+        after_number = bool(out) and out[-1].isdigit() and not punct_gap
         # A spaced en or em dash before a number is a separator ("the score — 10").
-        if (cat == "Pd" or ch in _SIGNS) and not (out and out[-1].isdigit()):
+        if (cat == "Pd" or ch in _SIGNS) and not after_number:
             j = i + 1
             while ch in _SPACED_SIGNS and j < n and text[j].isspace():
                 j += 1
@@ -89,6 +93,7 @@ def normalize(text: str) -> str:
             emit(ch)
         else:
             gap = True
+            punct_gap = punct_gap or not ch.isspace()
         i += 1
     return "".join(out)
 

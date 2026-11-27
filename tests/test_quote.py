@@ -51,6 +51,10 @@ def test_part_of_a_word_or_number_is_never_found(word, extra, before):
     ("Revenue reached 50,000 dollars", "Revenue reached 50,000 dollars."),
     ("It cost 50", "It cost 50. Then it rose."),
     ("the score 10 points", "the score — 10 points"),
+    ("Values were 10, -5, and 3", "Values were 10, -5, and 3"),
+    ("-5", "Values were 10, -5, and 3"),
+    ("pages 10 20", "pages 10 - 20"),
+    ("pages 10 20", "pages 10—20"),
 ])
 def test_matches_that_must_pass(quote, text):
     assert quote_in(quote, text)
@@ -66,6 +70,9 @@ def test_matches_that_must_pass(quote, text):
     ("Net change was 10%", "Net change was −10%."),
     ("Revenue reached 50", "Revenue reached 50.5 million."),
     ("Revenue reached 50", "Revenue reached 50,000 dollars."),
+    ("Values were 10, 5, and 3", "Values were 10, -5, and 3"),
+    ("rose 10 and 5%", "rose 10 and -5%"),
+    ("temps 10, 5", "temps 10, −5"),
     ("दिन", "दीन"),
     ("দিন", "দান"),
 ])
