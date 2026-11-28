@@ -3,6 +3,8 @@ import json
 import sys
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from citecheck import ConfigError, Status
 from citecheck import panel as P
@@ -261,3 +263,143 @@ def test_panel_works_as_a_regression_checker(tmp_path):
     key.write_text("\n".join(json.dumps({**r, "final_grade": "not_found"}) for r in rows(2)))
     code = regress([str(key), "--", sys.executable, "-m", "citecheck.panel", "-", "--mock"])
     assert code == 0
+
+
+# --- review round 1 -----------------------------------------------------------------------
+
+def counting_panel(verdict="supported"):
+    calls = []
+    def judge(family, reply):
+        return mock_judge(family, lambda p: calls.append(family) or reply)
+    researchers = [judge(f"fam{i}", say(verdict)) for i in range(3)]
+    return researchers, judge("critic-fam", STANDS), calls
+
+
+@pytest.mark.parametrize("bad,error", [
+    ({"id": "z", "claim": "x", "evidence": ""}, ValueError),
+    ({"claim": "x", "evidence": "y"}, ValueError),
+    ({"id": "c0", "claim": "x", "evidence": "y"}, ValueError),   # duplicate id
+    ("not a row", TypeError),
+])
+def test_a_bad_row_anywhere_fails_before_any_call(bad, error):
+    researchers, c, calls = counting_panel()
+    with pytest.raises(error):
+        run_panel([*rows(2), bad], researchers, c)
+    assert calls == []
+
+
+def test_results_stream_one_claim_at_a_time():
+    researchers, c, calls = counting_panel()
+    it = P.iter_panel(rows(3), researchers, c)
+    first = next(it)
+    assert first.id == "c0" and len(calls) == 4
+
+
+def test_no_call_goes_past_the_cap():
+    researchers, c, calls = counting_panel()
+    out = run_panel(rows(3), researchers, c, max_calls=8)
+    assert len(calls) == 8 and out[2].status is Status.NOT_CHECKED
+
+
+def test_cap_counts_actual_calls_not_the_worst_case():
+    researchers, c, calls = counting_panel("not_found")  # 3 calls each; worst case is 4
+    out = run_panel(rows(3), researchers, c, max_calls=10)
+    assert [r.status for r in out] == [Status.NOT_FOUND] * 3 and len(calls) == 9
+
+
+prose = st.text(alphabet=st.characters(blacklist_categories=["Cs"]), max_size=40)
+
+
+@given(prose, prose, st.sampled_from(sorted(P.VERDICTS)), st.booleans())
+def test_reply_found_inside_any_prose(before, after, verdict, fence):
+    body = json.dumps({"verdict": verdict, "reason": "r"})
+    if fence:
+        body = f"```json\n{body}\n```"
+    text = f"{before} {{noise}} {body} {after} {{\"other\": 1}}"
+    assert P._reply(text, "verdict")["verdict"] == verdict
+
+
+@given(prose)
+def test_reply_without_the_key_raises(text):
+    with pytest.raises(JudgeError):
+        P._reply(text.replace("verdict", "") + ' {"reason": "x"}', "verdict")
+
+
+@given(st.lists(st.sampled_from(list(P.VERDICTS.values())), min_size=1, max_size=7))
+def test_tally_never_hides_a_split_or_a_tie(statuses):
+    result = P._tally(statuses)
+    if Status.SUPPORTED in statuses and Status.CONTRADICTED in statuses:
+        assert result is Status.DISPUTED
+    counts = sorted((statuses.count(s) for s in set(statuses)), reverse=True)
+    if len(counts) > 1 and counts[0] == counts[1]:
+        assert result is Status.DISPUTED
+    if len(set(statuses)) == 1:
+        assert result is statuses[0]
+
+
+STDIN_AND_ARG = "import sys; print(repr(sys.stdin.read()), sys.argv[1])"
+
+
+def test_prompt_in_argv_leaves_stdin_closed():
+    out = cli_judge("f", [sys.executable, "-c", STDIN_AND_ARG, "{prompt}"], timeout=10).ask("hi")
+    assert out.strip() == "'' hi"
+
+
+def test_prompt_file_placeholder():
+    code = "import sys; print(open(sys.argv[1]).read())"
+    assert cli_judge("f", [sys.executable, "-c", code, "{prompt_file}"]).ask("long").strip() == "long"
+
+
+def test_non_utf8_output_is_kept_not_raised():
+    code = "import sys; sys.stdout.buffer.write(b'ok \\xff')"
+    assert cli_judge("f", [sys.executable, "-c", code]).ask("x").startswith("ok")
+
+
+def test_timeout_kills_the_children_too(tmp_path):
+    import subprocess
+    import time
+    pidfile = tmp_path / "pid"
+    code = ("import subprocess, sys, time; "
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+            "open(sys.argv[1], 'w').write(str(p.pid)); time.sleep(30)")
+    with pytest.raises(JudgeError, match="timed out"):
+        cli_judge("f", [sys.executable, "-c", code, str(pidfile)], timeout=1).ask("x")
+    pid = pidfile.read_text()
+    def alive():
+        return subprocess.run(["ps", "-p", pid], capture_output=True, check=False).returncode == 0
+    for _ in range(50):
+        if not alive():
+            break
+        time.sleep(0.1)
+    assert not alive(), "the child outlived the timeout"
+
+
+@pytest.mark.parametrize("cost", [float("nan"), float("inf"), -0.1, True, "0.1"])
+def test_openrouter_rejects_unusable_costs(monkeypatch, cost):
+    fake_openrouter(monkeypatch, [reply("a", cost)])
+    with pytest.raises(SpendCapError):
+        openrouter_judge("f", "m", max_usd=1, ua="t/1", key="k").ask("p")
+
+
+@pytest.mark.parametrize("body", [[1, 2], {"usage": {"cost": 0.1}}, {"usage": [], "choices": []}])
+def test_openrouter_odd_bodies_raise_judge_errors(monkeypatch, body):
+    fake_openrouter(monkeypatch, [body])
+    with pytest.raises(JudgeError):
+        openrouter_judge("f", "m", max_usd=1, ua="t/1", key="k").ask("p")
+
+
+def test_openrouter_sends_max_tokens(monkeypatch):
+    sent = fake_openrouter(monkeypatch, [reply("a", 0.01)])
+    openrouter_judge("f", "m", max_usd=1, ua="t/1", key="k", max_tokens=50).ask("p")
+    assert json.loads(sent[0].data)["max_tokens"] == 50
+
+
+def test_cli_network_mode_uses_the_subscription_panel(tmp_path, capsys, monkeypatch):
+    researchers, critic = panel("supported", "supported")
+    researchers = [P.Judge(j.family, j.ask, j.name) for j in researchers]  # networked
+    critic = P.Judge(critic.family, critic.ask, critic.name)
+    monkeypatch.setattr(P, "subscription_panel", lambda timeout: (researchers, critic))
+    f = tmp_path / "claims.jsonl"
+    f.write_text(json.dumps(rows(1)[0]))
+    assert P.main([str(f), "--network"]) == 0
+    assert json.loads(capsys.readouterr().out)["grade"] == "supported"

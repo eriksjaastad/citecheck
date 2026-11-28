@@ -13,14 +13,16 @@ out needs ``network=True`` on the call, like the other checks.
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import math
 import os
-import re
+import signal
 import subprocess
 import tempfile
 import urllib.request
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -71,25 +73,43 @@ class PanelResult:
 # --- judges -------------------------------------------------------------------------------
 
 def cli_judge(family: str, argv: list[str], *, name: str = "", timeout: float = 300) -> Judge:
-    """A judge that runs a subscription CLI. ``"{prompt}"`` in argv is replaced by the
-    prompt; without it the prompt goes on stdin. It runs in an empty temporary folder."""
+    """A judge that runs a subscription CLI in an empty temporary folder.
+
+    ``"{prompt}"`` in argv is replaced by the prompt, ``"{prompt_file}"`` by a file in that
+    folder holding it; with neither, the prompt goes on stdin. On a timeout the CLI is killed
+    with every process it started."""
     if not argv:
         raise ValueError("argv is empty")
-    use_arg = "{prompt}" in argv
+    on_stdin = "{prompt}" not in argv and "{prompt_file}" not in argv
 
     def ask(prompt: str) -> str:
-        cmd = [prompt if a == "{prompt}" else a for a in argv]
         with tempfile.TemporaryDirectory() as cwd:
+            prompt_file = os.path.join(cwd, "prompt.txt")
+            with open(prompt_file, "w", encoding="utf-8") as f:
+                f.write(prompt)
+            cmd = [prompt if a == "{prompt}" else prompt_file if a == "{prompt_file}" else a
+                   for a in argv]
             try:
-                done = subprocess.run(cmd, input=None if use_arg else prompt, cwd=cwd,
-                                      capture_output=True, text=True, timeout=timeout, check=False)
-            except (OSError, subprocess.TimeoutExpired) as e:
+                proc = subprocess.Popen(
+                    cmd, cwd=cwd, stdin=subprocess.PIPE if on_stdin else subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            except OSError as e:
                 raise JudgeError(f"{argv[0]}: {e}") from None
-        if done.returncode != 0:
-            raise JudgeError(f"{argv[0]} exited {done.returncode}: {done.stderr.strip()[-300:]}")
-        if not done.stdout.strip():
+            try:
+                out, err = proc.communicate(prompt.encode() if on_stdin else None,
+                                            timeout=timeout)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
+                raise JudgeError(f"{argv[0]} timed out after {timeout} s") from None
+        stdout = out.decode("utf-8", errors="replace")
+        if proc.returncode != 0:
+            tail = err.decode("utf-8", errors="replace").strip()[-300:]
+            raise JudgeError(f"{argv[0]} exited {proc.returncode}: {tail}")
+        if not stdout.strip():
             raise JudgeError(f"{argv[0]} printed nothing")
-        return done.stdout
+        return stdout
 
     return Judge(family, ask, name or argv[0])
 
@@ -106,9 +126,12 @@ def subscription_panel(timeout: float = 300) -> tuple[list[Judge], Judge]:
     researchers = [
         cli_judge("anthropic", ["claude", "-p", "--tools", "", "--no-session-persistence"],
                   timeout=timeout),
-        cli_judge("xai", ["grok", "-p", "{prompt}", "--disable-web-search"], timeout=timeout),
-        cli_judge("google", ["agy", "--print-timeout", f"{int(timeout)}s", "-p", "{prompt}"],
-                  timeout=timeout + 10),
+        # Grok and Antigravity cannot be given zero tools: grok keeps only read_file, agy runs
+        # sandboxed in plan mode, and both start in an empty folder.
+        cli_judge("xai", ["grok", "--prompt-file", "{prompt_file}", "--tools", "read_file",
+                          "--disable-web-search"], timeout=timeout),
+        cli_judge("google", ["agy", "--sandbox", "--mode", "plan", "--print-timeout",
+                             f"{int(timeout)}s", "-p", "{prompt}"], timeout=timeout + 10),
     ]
     critic = cli_judge("openai", ["codex", "exec", "--sandbox", "read-only",
                                   "--skip-git-repo-check", "-"], timeout=timeout)
@@ -116,11 +139,14 @@ def subscription_panel(timeout: float = 300) -> tuple[list[Judge], Judge]:
 
 
 def openrouter_judge(family: str, model: str, *, max_usd: float, ua: str,
-                     key: str | None = None, timeout: float = 120) -> Judge:
-    """A paid judge through OpenRouter, stopped at ``max_usd`` spent by this judge.
+                     key: str | None = None, timeout: float = 120,
+                     max_tokens: int = 800) -> Judge:
+    """A paid judge through OpenRouter, stopped once this judge has spent ``max_usd``.
 
-    The key comes from ``OPENROUTER_API_KEY`` when not given; a missing key raises. A reply
-    that does not report its cost raises, since the cap could not be kept."""
+    The cap is per judge, checked before each call, so the last call can pass it by up to
+    one reply of ``max_tokens``. The key comes from ``OPENROUTER_API_KEY`` when not given; a
+    missing key raises. A reply that does not report a cost raises, since the cap could not
+    be kept."""
     if not max_usd > 0:
         raise ValueError("max_usd must be above 0")
     if not ua.strip():
@@ -134,7 +160,7 @@ def openrouter_judge(family: str, model: str, *, max_usd: float, ua: str,
         if spent[0] >= max_usd:
             raise SpendCapError(f"{model}: spent ${spent[0]:.4f} of ${max_usd}")
         body = json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}],
-                           "usage": {"include": True}}).encode()
+                           "max_tokens": max_tokens, "usage": {"include": True}}).encode()
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/chat/completions", data=body,
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
@@ -144,9 +170,11 @@ def openrouter_judge(family: str, model: str, *, max_usd: float, ua: str,
                 data = json.load(resp)
         except (OSError, ValueError) as e:
             raise JudgeError(f"{model}: {e}") from None
-        cost = (data.get("usage") or {}).get("cost")
-        if not isinstance(cost, (int, float)):
-            raise SpendCapError(f"{model}: reply did not report its cost")
+        usage = data.get("usage") if isinstance(data, dict) else None
+        cost = usage.get("cost") if isinstance(usage, dict) else None
+        if (not isinstance(cost, (int, float)) or isinstance(cost, bool)
+                or not math.isfinite(cost) or cost < 0):
+            raise SpendCapError(f"{model}: reply did not report a usable cost: {cost!r}")
         spent[0] += cost
         try:
             return data["choices"][0]["message"]["content"] or ""
@@ -171,25 +199,27 @@ _CRITIC = (
     "stands only if it is genuinely solid.\n"
     'Reply with JSON only: {"falsified": true | false, "reason": "<one or two sentences>"}'
 )
-_JSON = re.compile(r"\{.*\}", re.DOTALL)
+_DECODER = json.JSONDecoder()
 
 
-def _reply(text: str) -> dict:
-    match = _JSON.search(text)
-    if not match:
-        raise JudgeError(f"no JSON in reply: {text.strip()[:200]!r}")
-    try:
-        obj = json.loads(match.group(0))
-    except ValueError:
-        raise JudgeError(f"bad JSON in reply: {match.group(0)[:200]!r}") from None
-    if not isinstance(obj, dict):
-        raise JudgeError("reply is not a JSON object")
-    return obj
+def _reply(text: str, key: str) -> dict:
+    """The first JSON object in a model reply that has ``key``. Prose, code fences and other
+    braces around it are ignored; no such object raises."""
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, _end = _DECODER.raw_decode(text, i)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and key in obj:
+            return obj
+    raise JudgeError(f"no JSON object with {key!r} in reply: {text.strip()[:200]!r}")
 
 
 def _research(judge: Judge, prompt: str) -> Vote:
     try:
-        obj = _reply(judge.ask(prompt))
+        obj = _reply(judge.ask(prompt), "verdict")
         status = VERDICTS.get(str(obj.get("verdict", "")).strip().lower())
         if status is None:
             raise JudgeError(f"verdict {obj.get('verdict')!r} is not one of {sorted(VERDICTS)}")
@@ -200,7 +230,7 @@ def _research(judge: Judge, prompt: str) -> Vote:
 
 def _criticise(judge: Judge, prompt: str) -> Vote:
     try:
-        obj = _reply(judge.ask(prompt))
+        obj = _reply(judge.ask(prompt), "falsified")
         falsified = obj.get("falsified")
         if not isinstance(falsified, bool):
             raise JudgeError(f"falsified is {falsified!r}, not true or false")
@@ -261,33 +291,53 @@ def judge_claim(id: str, claim: str, evidence: str, researchers: list[Judge], cr
     return PanelResult(id, status, votes, crit, "critic could not falsify it", calls)
 
 
-def run_panel(rows: Iterable[Mapping], researchers: list[Judge], critic: Judge, *,
-              network: bool = False, max_calls: int = MAX_CALLS) -> list[PanelResult]:
-    """Every row ``{"id", "claim", "evidence"}`` through the panel, in order.
-
-    A claim that could take the run past ``max_calls`` is not judged: it and every later one
-    come back NOT_CHECKED, never dropped."""
-    _check_panel(researchers, critic, network)
-    rows = list(rows)
-    if not rows:
+def _claims(rows: Iterable) -> list[tuple[str, str, str]]:
+    """Every row as (id, claim, evidence), checked before any judge is called."""
+    out, seen = [], set()
+    for n, row in enumerate(rows, 1):
+        if not isinstance(row, Mapping):
+            raise TypeError(f"row {n} is not an object: {row!r}")
+        id, claim, evidence = (str(row.get(k) or "") for k in ("id", "claim", "evidence"))
+        if not id:
+            raise ValueError(f"row {n} has no id")
+        if id in seen:
+            raise ValueError(f"row {n}: duplicate id {id!r}")
+        if not claim.strip() or not evidence.strip():
+            raise ValueError(f"row {n} ({id}): claim and evidence must both have text")
+        seen.add(id)
+        out.append((id, claim, evidence))
+    if not out:
         raise ValueError("no claims to judge")
+    return out
+
+
+def iter_panel(rows: Iterable[Mapping], researchers: list[Judge], critic: Judge, *,
+               network: bool = False, max_calls: int = MAX_CALLS) -> Iterator[PanelResult]:
+    """Every row ``{"id", "claim", "evidence"}`` through the panel, in order, each result as
+    soon as it is ready.
+
+    Every row is checked before the first call, so a bad row costs nothing. A claim that
+    could take the run past ``max_calls`` is not judged: it and every later one come back
+    NOT_CHECKED, never dropped."""
+    _check_panel(researchers, critic, network)
     per_claim = len(researchers) + 1
     if max_calls < per_claim:
         raise ValueError(f"max_calls {max_calls} is below one claim's {per_claim} calls")
-    results: list[PanelResult] = []
+    claims = _claims(rows)
     calls = 0
-    for row in rows:
-        id, claim, evidence = (str(row.get(k) or "") for k in ("id", "claim", "evidence"))
-        if not id:
-            raise ValueError(f"row has no id: {dict(row)}")
+    for id, claim, evidence in claims:
         if calls + per_claim > max_calls:
-            results.append(PanelResult(id, Status.NOT_CHECKED, (), None,
-                                       f"call cap {max_calls} reached", 0))
+            yield PanelResult(id, Status.NOT_CHECKED, (), None, f"call cap {max_calls} reached", 0)
             continue
         result = judge_claim(id, claim, evidence, researchers, critic, network=network)
         calls += result.calls
-        results.append(result)
-    return results
+        yield result
+
+
+def run_panel(rows: Iterable[Mapping], researchers: list[Judge], critic: Judge, *,
+              network: bool = False, max_calls: int = MAX_CALLS) -> list[PanelResult]:
+    """``iter_panel`` collected into a list."""
+    return list(iter_panel(rows, researchers, critic, network=network, max_calls=max_calls))
 
 
 def to_json(result: PanelResult) -> dict:
@@ -329,11 +379,11 @@ def main(argv: list[str] | None = None) -> int:
         critic = mock_judge("mock-critic", '{"falsified": false, "reason": "mock"}')
     else:
         researchers, critic = subscription_panel(args.timeout)
-    results = run_panel(rows, researchers, critic, network=args.network,
-                        max_calls=args.max_calls)
-    for r in results:
-        print(json.dumps(to_json(r), ensure_ascii=False))
-    counts = Counter(r.status.value for r in results)
+    counts: Counter[str] = Counter()
+    for r in iter_panel(rows, researchers, critic, network=args.network,
+                        max_calls=args.max_calls):
+        print(json.dumps(to_json(r), ensure_ascii=False), flush=True)
+        counts[r.status.value] += 1
     print(" ".join(f"{k}={v}" for k, v in sorted(counts.items())), file=sys.stderr)
     return 0
 

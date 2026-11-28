@@ -92,7 +92,8 @@ In Python: `citecheck.rules.read("tiers")`. An unknown name raises.
 
 ## Judgment panel (optional)
 
-Is the claim true, given evidence the mechanical checks already passed? Researchers from
+Is the claim true, given evidence the mechanical checks already passed? Run those checks
+first: the panel judges whatever evidence it is handed. Researchers from
 different model families judge each claim against the same evidence without seeing each
 other; a critic from a further family then tries to falsify a SUPPORTED or CONTRADICTED
 result, and a falsified result is `DISPUTED`. Nothing else in citecheck calls it.
@@ -104,8 +105,12 @@ python -m citecheck.panel claims.jsonl --mock       # offline dry run
 
 - `--network` uses subscription CLIs: `claude`, `grok` and `agy` research, `codex` criticises.
   In Python, build any panel from `cli_judge`, `mock_judge` or `openrouter_judge`; the last is
-  the only paid judge and needs `max_usd` (it stops there, and a reply without its cost raises).
-- Any judge failing makes that claim `NOT_CHECKED`; researchers splitting `SUPPORTED` and
+  the only paid judge and needs `max_usd`, a cap per judge checked before each call (the last
+  call can pass it by one reply of `max_tokens`); a reply without a usable cost raises.
+- Grok and Antigravity cannot run with no tools: grok keeps only `read_file`, agy runs with
+  `--sandbox --mode plan`, and every judge starts in an empty temporary folder.
+- Every row is checked before the first call, and results print as each claim finishes.
+  Any judge failing makes that claim `NOT_CHECKED`; researchers splitting `SUPPORTED` and
   `CONTRADICTED`, or tying, is `DISPUTED`. A run stops at 20 calls (`--max-calls`), and every
   claim after the cap comes back `NOT_CHECKED`, never dropped.
 - Output rows carry `grade`, so the panel is a checker for the regression runner:
