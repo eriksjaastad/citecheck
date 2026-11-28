@@ -23,7 +23,7 @@ and nothing leaves the machine unless you ask for it on that call.
 Pin a tag:
 
 ```
-uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.4.0"
+uv add "citecheck @ git+https://github.com/eriksjaastad/citecheck@v0.5.0"
 ```
 
 ## Use
@@ -85,10 +85,31 @@ source tiers (S1 primary, S2 professional, S3 secondary, forums for experience o
 files an agent reads before checking. A project with no Python can load them pinned:
 
 ```
-uvx --from git+https://github.com/eriksjaastad/citecheck@v0.4.0 citecheck-rules protocol tiers
+uvx --from git+https://github.com/eriksjaastad/citecheck@v0.5.0 citecheck-rules protocol tiers
 ```
 
 In Python: `citecheck.rules.read("tiers")`. An unknown name raises.
+
+## Judgment panel (optional)
+
+Is the claim true, given evidence the mechanical checks already passed? Researchers from
+different model families judge each claim against the same evidence without seeing each
+other; a critic from a further family then tries to falsify a SUPPORTED or CONTRADICTED
+result, and a falsified result is `DISPUTED`. Nothing else in citecheck calls it.
+
+```
+python -m citecheck.panel claims.jsonl --network    # rows: {"id", "claim", "evidence"}
+python -m citecheck.panel claims.jsonl --mock       # offline dry run
+```
+
+- `--network` uses subscription CLIs: `claude`, `grok` and `agy` research, `codex` criticises.
+  In Python, build any panel from `cli_judge`, `mock_judge` or `openrouter_judge`; the last is
+  the only paid judge and needs `max_usd` (it stops there, and a reply without its cost raises).
+- Any judge failing makes that claim `NOT_CHECKED`; researchers splitting `SUPPORTED` and
+  `CONTRADICTED`, or tying, is `DISPUTED`. A run stops at 20 calls (`--max-calls`), and every
+  claim after the cap comes back `NOT_CHECKED`, never dropped.
+- Output rows carry `grade`, so the panel is a checker for the regression runner:
+  `python -m citecheck.regress key.jsonl -- python -m citecheck.panel - --network`.
 
 ## Develop
 

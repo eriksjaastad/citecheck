@@ -1,7 +1,7 @@
 [project]
 name = "citecheck"
-version = "0.4.0"
-description = "Mechanical checks that a claim matches its cited source: quote, link, DOI and drift, a regression runner, and the fact-check rules agents load."
+version = "0.5.0"
+description = "Mechanical checks that a claim matches its cited source: quote, link, DOI and drift, a regression runner, the fact-check rules agents load, and an optional judgment panel."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
